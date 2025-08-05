@@ -6,7 +6,17 @@ All configurable parameters should be defined here to maintain consistency acros
 from pathlib import Path
 
 # Database configuration
-DB_FILE = "tradable_stocks.db"
+import os
+import tempfile
+
+# Use temporary directory for cloud deployments
+if os.getenv('STREAMLIT_SHARING_MODE') or os.getenv('STREAMLIT_CLOUD'):
+    # Running on Streamlit Cloud - use temp directory
+    DB_FILE = os.path.join(tempfile.gettempdir(), "tradable_stocks.db")
+else:
+    # Running locally - use current directory
+    DB_FILE = "tradable_stocks.db"
+
 TABLE_NAME = "tradable_stocks"
 
 # Data source URLs

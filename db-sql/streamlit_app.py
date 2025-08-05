@@ -9,6 +9,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import time
+import os
 
 # Import our modules
 from technical_analysis import TechnicalAnalyzer
@@ -64,6 +65,37 @@ if 'data_fetched' not in st.session_state:
     st.session_state.data_fetched = False
 if 'last_fetch_time' not in st.session_state:
     st.session_state.last_fetch_time = None
+if 'cloud_warning_shown' not in st.session_state:
+    st.session_state.cloud_warning_shown = False
+
+# Check if running on Streamlit Cloud
+def is_streamlit_cloud():
+    """Check if running on Streamlit Cloud."""
+    return bool(os.getenv('STREAMLIT_SHARING_MODE') or os.getenv('STREAMLIT_CLOUD'))
+
+# Show cloud storage warning
+def show_cloud_warning():
+    """Show warning about data persistence on Streamlit Cloud."""
+    if is_streamlit_cloud() and not st.session_state.cloud_warning_shown:
+        st.warning("""
+        ⚠️ **Running on Streamlit Cloud**: Data is stored temporarily and will be lost when the app restarts.
+        For persistent data, please run the app locally or fetch data fresh each session.
+        """)
+        st.session_state.cloud_warning_shown = True
+
+def check_data_availability():
+    """Check if data is available and update session state accordingly."""
+    try:
+        stats = st.session_state.analyzer.get_summary_statistics()
+        if stats and stats.get('total_stocks_with_data', 0) > 0:
+            st.session_state.data_fetched = True
+            return True
+        else:
+            st.session_state.data_fetched = False
+            return False
+    except Exception:
+        st.session_state.data_fetched = False
+        return False
 
 # Cached functions to avoid repeated database queries
 @st.cache_data(ttl=300)  # Cache for 5 minutes
@@ -93,9 +125,25 @@ def get_cached_latest_prices(_analyzer, limit=1000):
 
 def main():
     """Main dashboard function."""
-    
+
+    # Page configuration
+    st.set_page_config(
+        page_title="SmartInk - Stock Analysis",
+        page_icon="📈",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
+
     # Header
-    st.markdown('<h1 class="main-header">📈 Stock Technical Analysis Dashboard</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-header">📈 SmartInk - Intelligent Stock Analysis</h1>', unsafe_allow_html=True)
+    st.markdown("*Professional-grade stock analysis focusing on actionable trading opportunities*")
+
+    # Show cloud warning if applicable
+    show_cloud_warning()
+
+    # Check data availability on startup
+    if not st.session_state.data_fetched:
+        check_data_availability()
     
     # Sidebar
     with st.sidebar:
@@ -129,6 +177,13 @@ def main():
             use_popular_only = (fetch_mode == "Popular Stocks Only")
             max_stocks_param = max_stocks if max_stocks > 0 else None
 
+            # Clear any existing cache first
+            st.cache_data.clear()
+
+            # Show cloud-specific message
+            if is_streamlit_cloud():
+                st.info("🌐 Fetching fresh data for this session (data will not persist after app restart)")
+
             # Use streaming fetch for better UX
             with st.spinner("🔄 Setting up database schema..."):
                 if not st.session_state.analyzer.setup_database():
@@ -136,6 +191,9 @@ def main():
                 else:
                     # Stream the data fetching process
                     if stream_stock_data_fetch(st.session_state.analyzer, use_popular_only, max_stocks_param):
+                        # Force refresh of data availability check
+                        check_data_availability()
+                        st.success("✅ Data fetched successfully!")
                         st.rerun()
                     else:
                         st.error("❌ Data fetch failed")
@@ -180,7 +238,19 @@ def show_dashboard_overview(sma_period):
     st.header("📊 Stock Market Dashboard")
 
     if not st.session_state.data_fetched:
-        st.warning("⚠️ No data available. Please fetch stock data first using the sidebar.")
+        if is_streamlit_cloud():
+            st.warning("""
+            ⚠️ **No data available** - This is expected on first visit to Streamlit Cloud.
+
+            **To get started:**
+            1. Click "🔄 Fetch Latest Data" in the sidebar
+            2. Choose "Popular Stocks Only" for a quick start (recommended)
+            3. Or "All NSE Stocks" for comprehensive analysis (takes longer)
+
+            💡 **Note**: Data is temporary on Streamlit Cloud and will need to be refetched each session.
+            """)
+        else:
+            st.warning("⚠️ No data available. Please fetch stock data first using the sidebar.")
         return
 
     try:
