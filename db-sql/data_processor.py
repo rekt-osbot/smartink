@@ -11,7 +11,7 @@ from typing import Optional, List, Tuple
 
 from utils import normalize_column_name, ensure_file_exists, print_step
 from config import (
-    PRIMARY_CSV_URL, BHAV_CSV_URL, LOCAL_CSV_FILES, 
+    PRIMARY_CSV_URL, BHAV_CSV_URL,
     REQUEST_TIMEOUT, REQUEST_HEADERS, DATE_FORMAT
 )
 
@@ -85,27 +85,21 @@ class DataProcessor:
     
     def load_data_with_fallback(self) -> Tuple[Optional[pd.DataFrame], str]:
         """
-        Load data with fallback strategy: try local files first, then URLs.
-        
+        Load data with URL-based fallback strategy.
+
         Returns:
             Tuple[Optional[pd.DataFrame], str]: DataFrame and source description
         """
-        # Try local files first
-        for csv_file in LOCAL_CSV_FILES:
-            df = self.load_csv_from_file(csv_file)
-            if df is not None:
-                return df, f"local file: {csv_file}"
-        
         # Try primary URL
         df = self.load_csv_from_url(PRIMARY_CSV_URL)
         if df is not None:
             return df, f"URL: {PRIMARY_CSV_URL}"
-        
+
         # Try alternative URL
         df = self.load_csv_from_url(BHAV_CSV_URL)
         if df is not None:
             return df, f"URL: {BHAV_CSV_URL}"
-        
+
         return None, "No data source available"
     
     def clean_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
