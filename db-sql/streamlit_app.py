@@ -176,13 +176,23 @@ def main():
 
 def show_dashboard_overview(sma_period):
     """Show main dashboard overview."""
-    
+
+    st.header("📊 Stock Market Dashboard")
+
     if not st.session_state.data_fetched:
         st.warning("⚠️ No data available. Please fetch stock data first using the sidebar.")
         return
-    
-    # Get summary statistics (cached)
-    stats = get_cached_summary_statistics(st.session_state.analyzer)
+
+    try:
+        # Get summary statistics (cached)
+        stats = get_cached_summary_statistics(st.session_state.analyzer)
+
+        if not stats or stats.get('total_stocks_with_data', 0) == 0:
+            st.warning("⚠️ No stock data found. Please fetch data first.")
+            return
+    except Exception as e:
+        st.error(f"❌ Error loading dashboard data: {str(e)}")
+        return
     
     # Metrics row
     col1, col2, col3, col4 = st.columns(4)
@@ -196,8 +206,12 @@ def show_dashboard_overview(sma_period):
     
     with col2:
         # Get actionable breakout opportunities
-        breakout_opportunities = get_cached_stocks_near_sma_breakout(st.session_state.analyzer, sma_period, 5.0)
-        breakout_count = len(breakout_opportunities) if breakout_opportunities is not None else 0
+        try:
+            breakout_opportunities = get_cached_stocks_near_sma_breakout(st.session_state.analyzer, sma_period, 5.0)
+            breakout_count = len(breakout_opportunities) if breakout_opportunities is not None else 0
+        except Exception:
+            breakout_count = 0
+
         st.metric(
             label=f"🎯 SMA Breakout Opportunities",
             value=breakout_count,
@@ -212,13 +226,20 @@ def show_dashboard_overview(sma_period):
         )
     
     with col4:
-        total = stats.get('total_stocks_with_data', 1)
-        momentum_pct = (stats.get('stocks_above_20_sma', 0) / total) * 100
-        st.metric(
-            label="💪 Momentum %",
-            value=f"{momentum_pct:.1f}%",
-            help="Percentage of stocks showing upward momentum"
-        )
+        total = stats.get('total_stocks_with_data', 0)
+        if total > 0:
+            momentum_pct = (stats.get('stocks_above_20_sma', 0) / total) * 100
+            st.metric(
+                label="💪 Momentum %",
+                value=f"{momentum_pct:.1f}%",
+                help="Percentage of stocks showing upward momentum"
+            )
+        else:
+            st.metric(
+                label="💪 Momentum %",
+                value="0.0%",
+                help="No data available - fetch stock data first"
+            )
     
     # Charts row
     col1, col2 = st.columns(2)
@@ -232,6 +253,14 @@ def show_dashboard_overview(sma_period):
 def show_sma_distribution_chart(sma_period):
     """Show distribution of actionable vs extended stocks."""
 
+    # Get total stocks first
+    stats = get_cached_summary_statistics(st.session_state.analyzer)
+    total = stats.get('total_stocks_with_data', 0)
+
+    if total == 0:
+        st.info("No data available. Please fetch stock data first.")
+        return
+
     # Get actionable opportunities (within ±5% of SMA)
     breakout_opportunities = get_cached_stocks_near_sma_breakout(st.session_state.analyzer, sma_period, 5.0)
     actionable_count = len(breakout_opportunities) if breakout_opportunities is not None else 0
@@ -243,32 +272,37 @@ def show_sma_distribution_chart(sma_period):
     else:
         extended_count = 0
 
-    # Get total stocks
-    stats = get_cached_summary_statistics(st.session_state.analyzer)
-    total = stats.get('total_stocks_with_data', 1)
-    other_count = total - actionable_count - extended_count
+    # Calculate other count (ensure non-negative)
+    other_count = max(0, total - actionable_count - extended_count)
 
-    # Create pie chart with trading-focused categories
-    fig = px.pie(
-        values=[actionable_count, extended_count, other_count],
-        names=[f'🎯 Actionable (±5% of SMA)', f'📈 Extended (>5% above SMA)', f'📉 Other/Below SMA'],
-        title=f"Trading Opportunities: {sma_period}-Day SMA",
-        color_discrete_map={
-            f'🎯 Actionable (±5% of SMA)': '#f39c12',    # Orange for actionable
-            f'📈 Extended (>5% above SMA)': '#2ecc71',    # Green for extended
-            f'📉 Other/Below SMA': '#e74c3c'             # Red for below/other
-        }
-    )
+    # Only create chart if we have data
+    if actionable_count + extended_count + other_count > 0:
+        # Create pie chart with trading-focused categories
+        fig = px.pie(
+            values=[actionable_count, extended_count, other_count],
+            names=[f'🎯 Actionable (±5% of SMA)', f'📈 Extended (>5% above SMA)', f'📉 Other/Below SMA'],
+            title=f"Trading Opportunities: {sma_period}-Day SMA",
+            color_discrete_map={
+                f'🎯 Actionable (±5% of SMA)': '#f39c12',    # Orange for actionable
+                f'📈 Extended (>5% above SMA)': '#2ecc71',    # Green for extended
+                f'📉 Other/Below SMA': '#e74c3c'             # Red for below/other
+            }
+        )
 
-    fig.update_traces(textposition='inside', textinfo='percent+label')
-    fig.update_layout(height=400)
+        fig.update_traces(textposition='inside', textinfo='percent+label')
+        fig.update_layout(height=400)
 
-    st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No stock data available for chart.")
 
 def show_top_performers_chart(sma_period):
     """Show actionable breakout opportunities."""
 
-    breakout_opportunities = get_cached_stocks_near_sma_breakout(st.session_state.analyzer, sma_period, 5.0)
+    try:
+        breakout_opportunities = get_cached_stocks_near_sma_breakout(st.session_state.analyzer, sma_period, 5.0)
+    except Exception:
+        breakout_opportunities = None
 
     if breakout_opportunities is not None and not breakout_opportunities.empty:
         # Get top 10 opportunities (closest to SMA or fresh breakouts)
