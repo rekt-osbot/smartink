@@ -14,6 +14,7 @@ import time
 from technical_analysis import TechnicalAnalyzer
 from stock_data_fetcher import StockDataFetcher
 from stock_data_manager import StockDataManager
+from streamlit_streaming import stream_stock_data_fetch
 
 # Page configuration
 st.set_page_config(
@@ -64,6 +65,32 @@ if 'data_fetched' not in st.session_state:
 if 'last_fetch_time' not in st.session_state:
     st.session_state.last_fetch_time = None
 
+# Cached functions to avoid repeated database queries
+@st.cache_data(ttl=300)  # Cache for 5 minutes
+def get_cached_summary_statistics(_analyzer):
+    """Get summary statistics with caching."""
+    return _analyzer.get_summary_statistics()
+
+@st.cache_data(ttl=300)  # Cache for 5 minutes
+def get_cached_stocks_above_sma(_analyzer, sma_period, max_distance=None):
+    """Get stocks above SMA with caching."""
+    return _analyzer.get_stocks_above_sma(sma_period, max_distance)
+
+@st.cache_data(ttl=300)  # Cache for 5 minutes
+def get_cached_stocks_near_sma_breakout(_analyzer, sma_period, max_distance=5.0):
+    """Get stocks near SMA breakout with caching."""
+    return _analyzer.get_stocks_near_sma_breakout(sma_period, max_distance)
+
+@st.cache_data(ttl=300)  # Cache for 5 minutes
+def get_cached_breakout_patterns(_analyzer):
+    """Get breakout patterns with caching."""
+    return _analyzer.get_open_high_patterns()
+
+@st.cache_data(ttl=300)  # Cache for 5 minutes
+def get_cached_latest_prices(_analyzer, limit=1000):
+    """Get latest prices with caching."""
+    return _analyzer.data_manager.get_latest_prices(limit=limit)
+
 def main():
     """Main dashboard function."""
     
@@ -73,28 +100,9 @@ def main():
     # Sidebar
     with st.sidebar:
         st.header("🔧 Dashboard Controls")
-        
+
         # Data fetch section
         st.subheader("📊 Data Management")
-        
-        if st.button("🔄 Fetch Latest Data", type="primary", use_container_width=True):
-            use_popular_only = (fetch_mode == "Popular Stocks Only")
-            max_stocks_param = max_stocks if max_stocks > 0 else None
-            fetch_stock_data(use_popular_only, max_stocks_param)
-        
-        if st.session_state.last_fetch_time:
-            st.success(f"Last updated: {st.session_state.last_fetch_time.strftime('%Y-%m-%d %H:%M:%S')}")
-        
-        # Navigation
-        st.subheader("🧭 Navigation")
-        page = st.selectbox(
-            "Select Analysis View",
-            ["📊 Dashboard Overview", "📈 Stocks Above SMA", "🚀 Breakout Patterns", "📋 Data Explorer"]
-        )
-        
-        # Settings
-        st.subheader("⚙️ Settings")
-        sma_period = st.selectbox("SMA Period", [20, 50], index=0)
 
         # Data fetch options
         st.subheader("📊 Data Options")
@@ -117,6 +125,34 @@ def main():
         else:
             max_stocks = 50
 
+        if st.button("🔄 Fetch Latest Data", type="primary", use_container_width=True):
+            use_popular_only = (fetch_mode == "Popular Stocks Only")
+            max_stocks_param = max_stocks if max_stocks > 0 else None
+
+            # Use streaming fetch for better UX
+            with st.spinner("🔄 Setting up database schema..."):
+                if not st.session_state.analyzer.setup_database():
+                    st.error("❌ Failed to setup database schema")
+                else:
+                    # Stream the data fetching process
+                    if stream_stock_data_fetch(st.session_state.analyzer, use_popular_only, max_stocks_param):
+                        st.rerun()
+                    else:
+                        st.error("❌ Data fetch failed")
+
+        if st.session_state.last_fetch_time:
+            st.success(f"Last updated: {st.session_state.last_fetch_time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+        # Navigation
+        st.subheader("🧭 Navigation")
+        page = st.selectbox(
+            "Select Analysis View",
+            ["📊 Dashboard Overview", "🎯 SMA Breakout Opportunities", "📈 Stocks Above SMA", "🚀 Open=High Patterns", "📋 Data Explorer"]
+        )
+
+        # Settings
+        st.subheader("⚙️ Settings")
+        sma_period = st.selectbox("SMA Period", [20, 50], index=0)
         auto_refresh = st.checkbox("Auto-refresh (30s)", value=False)
     
     # Auto-refresh logic
@@ -127,67 +163,16 @@ def main():
     # Main content based on selected page
     if page == "📊 Dashboard Overview":
         show_dashboard_overview(sma_period)
+    elif page == "🎯 SMA Breakout Opportunities":
+        show_sma_breakout_opportunities(sma_period)
     elif page == "📈 Stocks Above SMA":
         show_stocks_above_sma(sma_period)
-    elif page == "🚀 Breakout Patterns":
+    elif page == "🚀 Open=High Patterns":
         show_breakout_patterns()
     elif page == "📋 Data Explorer":
         show_data_explorer()
 
-def fetch_stock_data(use_popular_only=False, max_stocks=None):
-    """Fetch latest stock data with progress indication."""
-
-    with st.spinner("🔄 Setting up database schema..."):
-        if not st.session_state.analyzer.setup_database():
-            st.error("❌ Failed to setup database schema")
-            return
-
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-
-    try:
-        if use_popular_only:
-            status_text.text("📡 Fetching popular stock data...")
-        else:
-            if max_stocks:
-                status_text.text(f"📡 Fetching data for up to {max_stocks} stocks...")
-            else:
-                status_text.text("📡 Fetching data for ALL NSE stocks...")
-
-        progress_bar.progress(25)
-
-        # Fetch data with new parameters
-        if st.session_state.analyzer.fetch_and_store_data(
-            use_popular_only=use_popular_only,
-            max_stocks=max_stocks
-        ):
-            progress_bar.progress(75)
-            status_text.text("💾 Storing data in database...")
-
-            progress_bar.progress(100)
-            status_text.text("✅ Data fetch completed!")
-
-            st.session_state.data_fetched = True
-            st.session_state.last_fetch_time = datetime.now()
-
-            time.sleep(1)
-            status_text.empty()
-            progress_bar.empty()
-
-            # Show success message with details
-            stats = st.session_state.analyzer.get_summary_statistics()
-            total_stocks = stats.get('total_stocks_with_data', 0)
-            st.success(f"🎉 Successfully fetched and stored data for {total_stocks} stocks!")
-            st.rerun()
-
-        else:
-            st.error("❌ Failed to fetch stock data")
-
-    except Exception as e:
-        st.error(f"❌ Error during data fetch: {str(e)}")
-    finally:
-        progress_bar.empty()
-        status_text.empty()
+# Removed old fetch function - now using streaming version
 
 def show_dashboard_overview(sma_period):
     """Show main dashboard overview."""
@@ -196,8 +181,8 @@ def show_dashboard_overview(sma_period):
         st.warning("⚠️ No data available. Please fetch stock data first using the sidebar.")
         return
     
-    # Get summary statistics
-    stats = st.session_state.analyzer.get_summary_statistics()
+    # Get summary statistics (cached)
+    stats = get_cached_summary_statistics(st.session_state.analyzer)
     
     # Metrics row
     col1, col2, col3, col4 = st.columns(4)
@@ -210,10 +195,13 @@ def show_dashboard_overview(sma_period):
         )
     
     with col2:
+        # Get actionable breakout opportunities
+        breakout_opportunities = get_cached_stocks_near_sma_breakout(st.session_state.analyzer, sma_period, 5.0)
+        breakout_count = len(breakout_opportunities) if breakout_opportunities is not None else 0
         st.metric(
-            label=f"📈 Above {sma_period}-Day SMA",
-            value=stats.get('stocks_above_20_sma', 0),
-            help=f"Stocks currently trading above their {sma_period}-day Simple Moving Average"
+            label=f"🎯 SMA Breakout Opportunities",
+            value=breakout_count,
+            help=f"Stocks within ±5% of {sma_period}-day SMA (actionable opportunities)"
         )
     
     with col3:
@@ -242,49 +230,226 @@ def show_dashboard_overview(sma_period):
         show_top_performers_chart(sma_period)
 
 def show_sma_distribution_chart(sma_period):
-    """Show distribution of stocks above/below SMA."""
-    
-    stats = st.session_state.analyzer.get_summary_statistics()
-    above_sma = stats.get('stocks_above_20_sma', 0)
+    """Show distribution of actionable vs extended stocks."""
+
+    # Get actionable opportunities (within ±5% of SMA)
+    breakout_opportunities = get_cached_stocks_near_sma_breakout(st.session_state.analyzer, sma_period, 5.0)
+    actionable_count = len(breakout_opportunities) if breakout_opportunities is not None else 0
+
+    # Get extended stocks (>5% above SMA)
+    extended_stocks = get_cached_stocks_above_sma(st.session_state.analyzer, sma_period)
+    if extended_stocks is not None:
+        extended_count = len(extended_stocks[extended_stocks['percentage_above_sma'] > 5.0])
+    else:
+        extended_count = 0
+
+    # Get total stocks
+    stats = get_cached_summary_statistics(st.session_state.analyzer)
     total = stats.get('total_stocks_with_data', 1)
-    below_sma = total - above_sma
-    
+    other_count = total - actionable_count - extended_count
+
+    # Create pie chart with trading-focused categories
     fig = px.pie(
-        values=[above_sma, below_sma],
-        names=[f'Above {sma_period}-Day SMA', f'Below {sma_period}-Day SMA'],
-        title=f"Stock Distribution: {sma_period}-Day SMA",
-        color_discrete_sequence=['#2ecc71', '#e74c3c']
+        values=[actionable_count, extended_count, other_count],
+        names=[f'🎯 Actionable (±5% of SMA)', f'📈 Extended (>5% above SMA)', f'📉 Other/Below SMA'],
+        title=f"Trading Opportunities: {sma_period}-Day SMA",
+        color_discrete_map={
+            f'🎯 Actionable (±5% of SMA)': '#f39c12',    # Orange for actionable
+            f'📈 Extended (>5% above SMA)': '#2ecc71',    # Green for extended
+            f'📉 Other/Below SMA': '#e74c3c'             # Red for below/other
+        }
     )
-    
+
     fig.update_traces(textposition='inside', textinfo='percent+label')
     fig.update_layout(height=400)
-    
+
     st.plotly_chart(fig, use_container_width=True)
 
 def show_top_performers_chart(sma_period):
-    """Show top performing stocks above SMA."""
-    
-    stocks_above_sma = st.session_state.analyzer.get_stocks_above_sma(sma_period)
-    
-    if stocks_above_sma is not None and not stocks_above_sma.empty:
-        # Get top 10 performers
-        top_stocks = stocks_above_sma.head(10)
-        
+    """Show actionable breakout opportunities."""
+
+    breakout_opportunities = get_cached_stocks_near_sma_breakout(st.session_state.analyzer, sma_period, 5.0)
+
+    if breakout_opportunities is not None and not breakout_opportunities.empty:
+        # Get top 10 opportunities (closest to SMA or fresh breakouts)
+        top_opportunities = breakout_opportunities.head(10)
+
+        # Color code by breakout status
+        color_map = {
+            'Fresh Breakout Above': '#2ecc71',
+            'Fresh Breakdown Below': '#e74c3c',
+            'Holding Above': '#f39c12',
+            'Holding Below': '#ff6b6b',
+            'At SMA': '#95a5a6'
+        }
+
+        colors = [color_map.get(status, '#95a5a6') for status in top_opportunities['breakout_status']]
+
         fig = px.bar(
-            top_stocks,
-            x='percentage_above_sma',
+            top_opportunities,
+            x='percentage_from_sma',
             y='symbol',
             orientation='h',
-            title=f"Top 10 Stocks Above {sma_period}-Day SMA",
-            labels={'percentage_above_sma': '% Above SMA', 'symbol': 'Stock Symbol'},
-            color='percentage_above_sma',
-            color_continuous_scale='viridis'
+            title=f"Top 10 SMA Breakout Opportunities",
+            labels={'percentage_from_sma': '% From SMA', 'symbol': 'Stock Symbol'},
+            color='breakout_status',
+            color_discrete_map=color_map
         )
-        
+
         fig.update_layout(height=400, yaxis={'categoryorder': 'total ascending'})
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info(f"No stocks currently above {sma_period}-day SMA")
+        st.info(f"No actionable opportunities near {sma_period}-day SMA")
+
+def show_sma_breakout_opportunities(sma_period):
+    """Show stocks near SMA breakout - actionable trading opportunities."""
+
+    st.header(f"🎯 SMA Breakout Opportunities ({sma_period}-Day)")
+
+    if not st.session_state.data_fetched:
+        st.warning("⚠️ No data available. Please fetch stock data first using the sidebar.")
+        return
+
+    # Add controls for breakout analysis
+    col1, col2 = st.columns(2)
+    with col1:
+        max_distance = st.slider(
+            "Max Distance from SMA (%)",
+            1.0, 10.0, 5.0, 0.5,
+            help="Stocks within this percentage of the SMA (±)"
+        )
+    with col2:
+        breakout_filter = st.selectbox(
+            "Filter by Status",
+            ["All", "Fresh Breakouts Only", "Fresh Breakdowns Only", "Holding Above", "Holding Below"]
+        )
+
+    # Get breakout opportunities
+    breakout_stocks = get_cached_stocks_near_sma_breakout(st.session_state.analyzer, sma_period, max_distance)
+
+    if breakout_stocks is None or breakout_stocks.empty:
+        st.info(f"No stocks found within ±{max_distance}% of their {sma_period}-day SMA.")
+        return
+
+    # Apply breakout filter
+    if breakout_filter != "All":
+        if breakout_filter == "Fresh Breakouts Only":
+            breakout_stocks = breakout_stocks[breakout_stocks['breakout_status'] == 'Fresh Breakout Above']
+        elif breakout_filter == "Fresh Breakdowns Only":
+            breakout_stocks = breakout_stocks[breakout_stocks['breakout_status'] == 'Fresh Breakdown Below']
+        elif breakout_filter == "Holding Above":
+            breakout_stocks = breakout_stocks[breakout_stocks['breakout_status'] == 'Holding Above']
+        elif breakout_filter == "Holding Below":
+            breakout_stocks = breakout_stocks[breakout_stocks['breakout_status'] == 'Holding Below']
+
+    # Summary metrics
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Total Opportunities", len(breakout_stocks))
+    with col2:
+        fresh_breakouts = len(breakout_stocks[breakout_stocks['breakout_status'] == 'Fresh Breakout Above'])
+        st.metric("🟢 Fresh Breakouts", fresh_breakouts)
+    with col3:
+        fresh_breakdowns = len(breakout_stocks[breakout_stocks['breakout_status'] == 'Fresh Breakdown Below'])
+        st.metric("🔴 Fresh Breakdowns", fresh_breakdowns)
+    with col4:
+        avg_distance = breakout_stocks['percentage_from_sma'].abs().mean()
+        st.metric("Avg Distance from SMA", f"{avg_distance:.1f}%")
+
+    # Breakout status distribution
+    st.subheader("📊 Breakout Status Distribution")
+    status_counts = breakout_stocks['breakout_status'].value_counts()
+
+    fig = px.bar(
+        x=status_counts.index,
+        y=status_counts.values,
+        title="Distribution of Breakout Opportunities",
+        labels={'x': 'Breakout Status', 'y': 'Number of Stocks'},
+        color=status_counts.values,
+        color_continuous_scale='viridis'
+    )
+    fig.update_layout(height=300)
+    st.plotly_chart(fig, use_container_width=True)
+
+    # Interactive table
+    st.subheader("🎯 Actionable Opportunities")
+
+    # Format the dataframe for display
+    display_df = breakout_stocks.copy()
+    display_df['close'] = display_df['close'].round(2)
+    display_df[f'sma_{sma_period}'] = display_df[f'sma_{sma_period}'].round(2)
+    display_df['percentage_from_sma'] = display_df['percentage_from_sma'].round(2)
+
+    # Add status emoji
+    status_emoji_map = {
+        'Fresh Breakout Above': '🟢',
+        'Fresh Breakdown Below': '🔴',
+        'Holding Above': '🟡',
+        'Holding Below': '🟠',
+        'At SMA': '⚪'
+    }
+    display_df['status_display'] = display_df['breakout_status'].map(
+        lambda x: f"{status_emoji_map.get(x, '⚪')} {x}"
+    )
+
+    # Rename columns for better display
+    column_mapping = {
+        'symbol': 'Symbol',
+        'close': 'Current Price',
+        f'sma_{sma_period}': f'{sma_period}-Day SMA',
+        'percentage_from_sma': '% From SMA',
+        'status_display': 'Breakout Status',
+        'volume': 'Volume',
+        'date': 'Date'
+    }
+    display_df = display_df.rename(columns=column_mapping)
+
+    # Select columns to display
+    display_columns = ['Symbol', 'Current Price', f'{sma_period}-Day SMA', '% From SMA', 'Breakout Status', 'Volume', 'Date']
+
+    st.dataframe(
+        display_df[display_columns],
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "% From SMA": st.column_config.NumberColumn(
+                "% From SMA",
+                help="Percentage distance from SMA (+ above, - below)",
+                format="%.2f%%"
+            ),
+            "Volume": st.column_config.NumberColumn(
+                "Volume",
+                help="Trading volume",
+                format="%d"
+            )
+        }
+    )
+
+    # Export functionality
+    if st.button("📥 Export Opportunities to CSV"):
+        csv = breakout_stocks.to_csv(index=False)
+        st.download_button(
+            label="Download CSV",
+            data=csv,
+            file_name=f"sma_breakout_opportunities_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv"
+        )
+
+    # Trading insights
+    st.subheader("💡 Trading Insights")
+
+    fresh_breakouts_count = len(breakout_stocks[breakout_stocks['breakout_status'] == 'Fresh Breakout Above'])
+    fresh_breakdowns_count = len(breakout_stocks[breakout_stocks['breakout_status'] == 'Fresh Breakdown Below'])
+
+    if fresh_breakouts_count > 0:
+        st.success(f"🟢 **{fresh_breakouts_count} Fresh Breakouts** - Stocks breaking above {sma_period}-day SMA today. Consider for long positions.")
+
+    if fresh_breakdowns_count > 0:
+        st.error(f"🔴 **{fresh_breakdowns_count} Fresh Breakdowns** - Stocks breaking below {sma_period}-day SMA today. Consider for short positions or avoid.")
+
+    holding_above = len(breakout_stocks[breakout_stocks['breakout_status'] == 'Holding Above'])
+    if holding_above > 0:
+        st.info(f"🟡 **{holding_above} Holding Above** - Stocks maintaining above {sma_period}-day SMA. Monitor for continuation.")
 
 def show_stocks_above_sma(sma_period):
     """Show detailed view of stocks above SMA."""
@@ -295,10 +460,17 @@ def show_stocks_above_sma(sma_period):
         st.warning("⚠️ No data available. Please fetch stock data first using the sidebar.")
         return
 
-    stocks_above_sma = st.session_state.analyzer.get_stocks_above_sma(sma_period)
+    # Add filter for maximum distance
+    col1, col2 = st.columns(2)
+    with col1:
+        max_distance = st.slider("Max % Above SMA", 0.0, 20.0, 10.0, 0.5)
+    with col2:
+        max_results = st.selectbox("Max Results", [10, 25, 50, 100], index=1)
+
+    stocks_above_sma = get_cached_stocks_above_sma(st.session_state.analyzer, sma_period, max_distance)
 
     if stocks_above_sma is None or stocks_above_sma.empty:
-        st.info(f"No stocks currently trading above their {sma_period}-day SMA.")
+        st.info(f"No stocks currently trading above their {sma_period}-day SMA within {max_distance}%.")
         return
 
     # Summary metrics
@@ -315,17 +487,8 @@ def show_stocks_above_sma(sma_period):
     # Interactive table
     st.subheader("📋 Detailed Stock List")
 
-    # Add filters
-    col1, col2 = st.columns(2)
-    with col1:
-        min_percentage = st.slider("Minimum % Above SMA", 0.0, 20.0, 0.0, 0.5)
-    with col2:
-        max_results = st.selectbox("Max Results", [10, 25, 50, 100], index=1)
-
     # Filter data
-    filtered_stocks = stocks_above_sma[
-        stocks_above_sma['percentage_above_sma'] >= min_percentage
-    ].head(max_results)
+    filtered_stocks = stocks_above_sma.head(max_results)
 
     # Format the dataframe for display
     display_df = filtered_stocks.copy()
@@ -352,7 +515,7 @@ def show_stocks_above_sma(sma_period):
                 "% Above SMA",
                 help="Percentage above SMA",
                 min_value=0,
-                max_value=20,
+                max_value=max_distance,
                 format="%.2f%%"
             )
         }
@@ -377,7 +540,7 @@ def show_breakout_patterns():
         st.warning("⚠️ No data available. Please fetch stock data first using the sidebar.")
         return
 
-    patterns = st.session_state.analyzer.get_open_high_patterns()
+    patterns = get_cached_breakout_patterns(st.session_state.analyzer)
 
     if patterns is None or patterns.empty:
         st.info("No open=high breakout patterns found in current data.")
@@ -442,8 +605,8 @@ def show_data_explorer():
         st.warning("⚠️ No data available. Please fetch stock data first using the sidebar.")
         return
 
-    # Get latest prices
-    latest_prices = st.session_state.analyzer.data_manager.get_latest_prices(limit=1000)
+    # Get latest prices (cached)
+    latest_prices = get_cached_latest_prices(st.session_state.analyzer, limit=1000)
 
     if latest_prices is None or latest_prices.empty:
         st.error("No price data available.")

@@ -123,86 +123,151 @@ class StockDataManager(DatabaseManager):
     
     def insert_price_data(self, data: pd.DataFrame) -> bool:
         """
-        Insert OHLCV data into the price table.
-        
+        Insert or update OHLCV data into the price table using proper upsert logic.
+
         Args:
             data (pd.DataFrame): DataFrame with OHLCV data
-            
+
         Returns:
             bool: True if successful
         """
         try:
             # Prepare data for insertion
             df_to_insert = data.copy()
-            
+
             # Ensure date is in string format
             if 'date' in df_to_insert.columns:
                 df_to_insert['date'] = pd.to_datetime(df_to_insert['date']).dt.strftime(DATE_FORMAT)
-            
+
             # Select only the columns we need
             required_columns = ['symbol', 'date', 'open', 'high', 'low', 'close', 'volume']
             df_to_insert = df_to_insert[required_columns]
-            
+
             with self.get_connection() as conn:
-                # Use INSERT OR REPLACE to handle duplicates
-                df_to_insert.to_sql(
-                    self.price_table,
-                    conn,
-                    if_exists='append',
-                    index=False,
-                    method='multi'
+                cursor = conn.cursor()
+
+                # Create temporary table for bulk upsert
+                temp_table = f"{self.price_table}_temp"
+                cursor.execute(f"DROP TABLE IF EXISTS {temp_table}")
+
+                # Create temporary table with same structure
+                cursor.execute(f"""
+                CREATE TEMPORARY TABLE {temp_table} (
+                    symbol TEXT NOT NULL,
+                    date DATE NOT NULL,
+                    open REAL NOT NULL,
+                    high REAL NOT NULL,
+                    low REAL NOT NULL,
+                    close REAL NOT NULL,
+                    volume INTEGER,
+                    PRIMARY KEY (symbol, date)
                 )
-                
+                """)
+
+                # Insert data into temporary table
+                df_to_insert.to_sql(temp_table, conn, if_exists='append', index=False)
+
+                # Perform upsert using INSERT OR REPLACE
+                cursor.execute(f"""
+                INSERT OR REPLACE INTO {self.price_table}
+                (symbol, date, open, high, low, close, volume, created_at)
+                SELECT
+                    symbol, date, open, high, low, close, volume,
+                    COALESCE(
+                        (SELECT created_at FROM {self.price_table} p
+                         WHERE p.symbol = {temp_table}.symbol AND p.date = {temp_table}.date),
+                        CURRENT_TIMESTAMP
+                    ) as created_at
+                FROM {temp_table}
+                """)
+
+                rows_affected = cursor.rowcount
+
+                # Clean up temporary table
+                cursor.execute(f"DROP TABLE {temp_table}")
+
                 conn.commit()
-                self._log(f"Inserted {len(df_to_insert)} price records")
+                self._log(f"Upserted {rows_affected} price records")
                 return True
-                
+
         except Exception as e:
-            self._log(f"Error inserting price data: {e}")
+            self._log(f"Error upserting price data: {e}")
             return False
     
     def insert_indicators_data(self, data: pd.DataFrame) -> bool:
         """
-        Insert technical indicators data.
-        
+        Insert or update technical indicators data using proper upsert logic.
+
         Args:
             data (pd.DataFrame): DataFrame with indicators data
-            
+
         Returns:
             bool: True if successful
         """
         try:
             df_to_insert = data.copy()
-            
+
             # Ensure date is in string format
             if 'date' in df_to_insert.columns:
                 df_to_insert['date'] = pd.to_datetime(df_to_insert['date']).dt.strftime(DATE_FORMAT)
-            
+
             # Select only the columns we need
             available_columns = ['symbol', 'date']
             indicator_columns = ['sma_20', 'sma_50', 'rsi_14']
-            
+
             for col in indicator_columns:
                 if col in df_to_insert.columns:
                     available_columns.append(col)
-            
+
             df_to_insert = df_to_insert[available_columns]
-            
+
             with self.get_connection() as conn:
-                df_to_insert.to_sql(
-                    self.indicators_table,
-                    conn,
-                    if_exists='append',
-                    index=False,
-                    method='multi'
+                cursor = conn.cursor()
+
+                # Create temporary table for bulk upsert
+                temp_table = f"{self.indicators_table}_temp"
+                cursor.execute(f"DROP TABLE IF EXISTS {temp_table}")
+
+                # Create temporary table with same structure
+                cursor.execute(f"""
+                CREATE TEMPORARY TABLE {temp_table} (
+                    symbol TEXT NOT NULL,
+                    date DATE NOT NULL,
+                    sma_20 REAL,
+                    sma_50 REAL,
+                    rsi_14 REAL,
+                    PRIMARY KEY (symbol, date)
                 )
-                
+                """)
+
+                # Insert data into temporary table
+                df_to_insert.to_sql(temp_table, conn, if_exists='append', index=False)
+
+                # Perform upsert using INSERT OR REPLACE
+                cursor.execute(f"""
+                INSERT OR REPLACE INTO {self.indicators_table}
+                (symbol, date, sma_20, sma_50, rsi_14, created_at)
+                SELECT
+                    symbol, date, sma_20, sma_50, rsi_14,
+                    COALESCE(
+                        (SELECT created_at FROM {self.indicators_table} i
+                         WHERE i.symbol = {temp_table}.symbol AND i.date = {temp_table}.date),
+                        CURRENT_TIMESTAMP
+                    ) as created_at
+                FROM {temp_table}
+                """)
+
+                rows_affected = cursor.rowcount
+
+                # Clean up temporary table
+                cursor.execute(f"DROP TABLE {temp_table}")
+
                 conn.commit()
-                self._log(f"Inserted {len(df_to_insert)} indicator records")
+                self._log(f"Upserted {rows_affected} indicator records")
                 return True
-                
+
         except Exception as e:
-            self._log(f"Error inserting indicators data: {e}")
+            self._log(f"Error upserting indicators data: {e}")
             return False
     
     def get_latest_prices(self, symbol: str = None, limit: int = 100) -> Optional[pd.DataFrame]:
@@ -241,21 +306,92 @@ class StockDataManager(DatabaseManager):
             self._log(f"Error getting latest prices: {e}")
             return None
     
-    def get_stocks_above_sma(self, sma_period: int = 20) -> Optional[pd.DataFrame]:
+    def get_stocks_near_sma_breakout(self, sma_period: int = 20, max_distance: float = 5.0) -> Optional[pd.DataFrame]:
         """
-        Get stocks currently trading above their SMA.
-        
+        Get stocks near SMA that are breaking out (within ±5% of SMA for fresh opportunities).
+
         Args:
             sma_period (int): SMA period (20 or 50)
-            
+            max_distance (float): Maximum percentage distance from SMA (default 5%)
+
+        Returns:
+            Optional[pd.DataFrame]: Stocks near SMA breakout or None
+        """
+        try:
+            sma_column = f"sma_{sma_period}"
+
+            query = f"""
+            SELECT
+                p.symbol,
+                p.date,
+                p.open,
+                p.high,
+                p.low,
+                p.close,
+                p.volume,
+                i.{sma_column},
+                ((p.close - i.{sma_column}) / i.{sma_column} * 100) as percentage_from_sma,
+                CASE
+                    WHEN p.close > i.{sma_column} THEN 'Above'
+                    WHEN p.close < i.{sma_column} THEN 'Below'
+                    ELSE 'At'
+                END as position_vs_sma,
+                -- Check if breaking above SMA today
+                CASE
+                    WHEN p.close > i.{sma_column} AND p.open <= i.{sma_column} THEN 'Fresh Breakout Above'
+                    WHEN p.close < i.{sma_column} AND p.open >= i.{sma_column} THEN 'Fresh Breakdown Below'
+                    WHEN p.close > i.{sma_column} THEN 'Holding Above'
+                    WHEN p.close < i.{sma_column} THEN 'Holding Below'
+                    ELSE 'At SMA'
+                END as breakout_status
+            FROM {self.price_table} p
+            JOIN {self.indicators_table} i ON p.symbol = i.symbol AND p.date = i.date
+            WHERE i.{sma_column} IS NOT NULL
+                AND ABS((p.close - i.{sma_column}) / i.{sma_column} * 100) <= ?
+                AND p.date = (
+                    SELECT MAX(date) FROM {self.price_table} p2
+                    WHERE p2.symbol = p.symbol
+                )
+            ORDER BY
+                CASE
+                    WHEN p.close > i.{sma_column} AND p.open <= i.{sma_column} THEN 1  -- Fresh breakouts first
+                    WHEN p.close < i.{sma_column} AND p.open >= i.{sma_column} THEN 2  -- Fresh breakdowns second
+                    ELSE 3
+                END,
+                ABS((p.close - i.{sma_column}) / i.{sma_column} * 100) ASC  -- Closest to SMA first
+            """
+
+            with self.get_connection() as conn:
+                df = pd.read_sql_query(query, conn, params=(max_distance,))
+                return df if not df.empty else None
+
+        except Exception as e:
+            self._log(f"Error getting stocks near SMA breakout: {e}")
+            return None
+
+    def get_stocks_above_sma(self, sma_period: int = 20, max_distance: float = None) -> Optional[pd.DataFrame]:
+        """
+        Get stocks currently trading above their SMA (legacy method for compatibility).
+
+        Args:
+            sma_period (int): SMA period (20 or 50)
+            max_distance (float): Maximum percentage above SMA (None for no limit)
+
         Returns:
             Optional[pd.DataFrame]: Stocks above SMA or None
         """
         try:
             sma_column = f"sma_{sma_period}"
-            
+
+            # Build query with optional distance filter
+            distance_filter = ""
+            params = []
+            if max_distance is not None:
+                distance_filter = f"AND ((p.close - i.{sma_column}) / i.{sma_column} * 100) <= ?"
+                params.append(max_distance)
+
             query = f"""
-            SELECT 
+            SELECT
                 p.symbol,
                 p.date,
                 p.close,
@@ -263,19 +399,20 @@ class StockDataManager(DatabaseManager):
                 ((p.close - i.{sma_column}) / i.{sma_column} * 100) as percentage_above_sma
             FROM {self.price_table} p
             JOIN {self.indicators_table} i ON p.symbol = i.symbol AND p.date = i.date
-            WHERE i.{sma_column} IS NOT NULL 
+            WHERE i.{sma_column} IS NOT NULL
                 AND p.close > i.{sma_column}
+                {distance_filter}
                 AND p.date = (
-                    SELECT MAX(date) FROM {self.price_table} p2 
+                    SELECT MAX(date) FROM {self.price_table} p2
                     WHERE p2.symbol = p.symbol
                 )
-            ORDER BY percentage_above_sma DESC
+            ORDER BY percentage_above_sma ASC
             """
-            
+
             with self.get_connection() as conn:
-                df = pd.read_sql_query(query, conn)
+                df = pd.read_sql_query(query, conn, params=params)
                 return df if not df.empty else None
-                
+
         except Exception as e:
             self._log(f"Error getting stocks above SMA: {e}")
             return None

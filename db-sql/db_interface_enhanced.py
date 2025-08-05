@@ -48,25 +48,6 @@ def find_matching_column(db_manager, possible_columns, column_type="column"):
 
     return None
 
-def execute_query(conn, query, params=None):
-    """Execute a query and return results with column headers"""
-    cursor = conn.cursor()
-    try:
-        if params:
-            cursor.execute(query, params)
-        else:
-            cursor.execute(query)
-        
-        results = cursor.fetchall()
-        if results:
-            headers = [desc[0] for desc in cursor.description]
-            return headers, results
-        else:
-            return None, []
-    except sqlite3.Error as e:
-        print(f"\nError executing query: {e}")
-        return None, None
-
 def show_all_stocks(db_manager):
     """Display all stocks in the database"""
     query = f"SELECT * FROM {TABLE_NAME}"

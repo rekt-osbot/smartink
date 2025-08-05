@@ -43,7 +43,7 @@ class TechnicalAnalyzer:
         """
         return self.data_manager.setup_extended_schema()
     
-    def fetch_and_store_data(self, symbols: List[str] = None, period: str = "3mo", use_popular_only: bool = False, max_stocks: int = None) -> bool:
+    def fetch_and_store_data(self, symbols: List[str] = None, period: str = "3mo", use_popular_only: bool = False, max_stocks: int = None, progress_callback=None) -> bool:
         """
         Fetch stock data and store in database.
 
@@ -79,46 +79,83 @@ class TechnicalAnalyzer:
                 symbols = symbols[:max_stocks]
             else:
                 self._log(f"Fetching data for all {len(symbols)} stocks from database")
-            
+
             self._log(f"Fetching data for {len(symbols)} stocks...")
-            
-            # Fetch data for all symbols
-            stock_data = self.fetcher.fetch_multiple_stocks(symbols, period)
-            
-            if not stock_data:
-                self._log("No data fetched")
-                return False
-            
-            # Store price data and indicators
+
+            # Process stocks in memory-efficient batches
+            batch_size = 100  # Process 100 stocks at a time
             total_records = 0
-            for symbol, data in stock_data.items():
-                if data is not None and not data.empty:
-                    # Store price data
-                    if self.data_manager.insert_price_data(data):
-                        total_records += len(data)
-                    
-                    # Store indicators data (SMA is already calculated)
-                    indicators_data = data[['symbol', 'date', 'sma_20']].copy()
-                    self.data_manager.insert_indicators_data(indicators_data)
-            
-            self._log(f"✓ Successfully stored {total_records} price records for {len(stock_data)} stocks")
+            total_processed = 0
+
+            for batch_start in range(0, len(symbols), batch_size):
+                batch_end = min(batch_start + batch_size, len(symbols))
+                batch_symbols = symbols[batch_start:batch_end]
+
+                self._log(f"Processing batch {batch_start//batch_size + 1}: symbols {batch_start+1}-{batch_end}")
+
+                # Fetch data for this batch
+                stock_data = self.fetcher.fetch_multiple_stocks(batch_symbols, period)
+
+                if not stock_data:
+                    self._log(f"No data fetched for batch {batch_start//batch_size + 1}")
+                    continue
+
+                # Store price data and indicators for this batch
+                batch_records = 0
+                for symbol, data in stock_data.items():
+                    if data is not None and not data.empty:
+                        # Store price data
+                        if self.data_manager.insert_price_data(data):
+                            batch_records += len(data)
+
+                        # Store indicators data (SMA is already calculated)
+                        indicators_data = data[['symbol', 'date', 'sma_20']].copy()
+                        self.data_manager.insert_indicators_data(indicators_data)
+
+                total_records += batch_records
+                total_processed += len(stock_data)
+
+                self._log(f"✓ Batch {batch_start//batch_size + 1} completed: {batch_records} records for {len(stock_data)} stocks")
+
+                # Clear batch data from memory
+                del stock_data
+
+                # Small pause between batches to allow garbage collection
+                import time
+                time.sleep(0.5)
+
+            self._log(f"✓ Successfully stored {total_records} price records for {total_processed} stocks")
             return True
             
         except Exception as e:
             self._log(f"Error fetching and storing data: {e}")
             return False
     
-    def get_stocks_above_sma(self, sma_period: int = 20) -> Optional[pd.DataFrame]:
+    def get_stocks_near_sma_breakout(self, sma_period: int = 20, max_distance: float = 5.0) -> Optional[pd.DataFrame]:
         """
-        Get stocks currently trading above their SMA.
-        
+        Get stocks near SMA that are breaking out (actionable opportunities).
+
         Args:
             sma_period (int): SMA period
-            
+            max_distance (float): Maximum percentage distance from SMA
+
+        Returns:
+            Optional[pd.DataFrame]: Stocks near SMA breakout or None
+        """
+        return self.data_manager.get_stocks_near_sma_breakout(sma_period, max_distance)
+
+    def get_stocks_above_sma(self, sma_period: int = 20, max_distance: float = None) -> Optional[pd.DataFrame]:
+        """
+        Get stocks currently trading above their SMA.
+
+        Args:
+            sma_period (int): SMA period
+            max_distance (float): Maximum percentage above SMA (None for no limit)
+
         Returns:
             Optional[pd.DataFrame]: Filtered stocks or None
         """
-        return self.data_manager.get_stocks_above_sma(sma_period)
+        return self.data_manager.get_stocks_above_sma(sma_period, max_distance)
     
     def get_open_high_patterns(self) -> Optional[pd.DataFrame]:
         """
@@ -129,22 +166,69 @@ class TechnicalAnalyzer:
         """
         return self.data_manager.get_open_high_patterns()
     
-    def display_stocks_above_sma(self, sma_period: int = 20):
+    def display_stocks_near_sma_breakout(self, sma_period: int = 20, max_distance: float = 5.0):
         """
-        Display stocks above SMA in a formatted table.
-        
+        Display stocks near SMA breakout in a formatted table (actionable opportunities).
+
         Args:
             sma_period (int): SMA period
+            max_distance (float): Maximum percentage distance from SMA
         """
-        print_section_header(f"STOCKS ABOVE {sma_period}-DAY SMA", CONSOLE_WIDTH)
-        
-        stocks = self.get_stocks_above_sma(sma_period)
-        
+        print_section_header(f"STOCKS NEAR {sma_period}-DAY SMA BREAKOUT (±{max_distance}%)", CONSOLE_WIDTH)
+
+        stocks = self.get_stocks_near_sma_breakout(sma_period, max_distance)
+
+        if stocks is None or stocks.empty:
+            print("No stocks found near SMA breakout or no data available.")
+            print("Try running 'Fetch Latest Data' first.")
+            return
+
+        # Format the data for display
+        display_data = []
+        for _, row in stocks.iterrows():
+            # Color coding for breakout status
+            status_symbol = "🟢" if "Above" in row['breakout_status'] else "🔴" if "Below" in row['breakout_status'] else "⚪"
+
+            display_data.append([
+                row['symbol'],
+                f"{row['close']:.2f}",
+                f"{row[f'sma_{sma_period}']:.2f}",
+                f"{row['percentage_from_sma']:+.2f}%",
+                f"{status_symbol} {row['breakout_status']}",
+                row['date']
+            ])
+
+        headers = ['Symbol', 'Current Price', f'{sma_period}-Day SMA', '% From SMA', 'Breakout Status', 'Date']
+        print(tabulate(display_data, headers=headers, tablefmt="grid"))
+        print(f"\nTotal actionable stocks near {sma_period}-day SMA: {len(display_data)}")
+
+        # Show breakdown by status
+        status_counts = stocks['breakout_status'].value_counts()
+        print(f"\nBreakdown:")
+        for status, count in status_counts.items():
+            print(f"• {status}: {count} stocks")
+
+    def display_stocks_above_sma(self, sma_period: int = 20, max_distance: float = None):
+        """
+        Display stocks above SMA in a formatted table.
+
+        Args:
+            sma_period (int): SMA period
+            max_distance (float): Maximum percentage above SMA (None for no limit)
+        """
+        title = f"STOCKS ABOVE {sma_period}-DAY SMA"
+        if max_distance:
+            title += f" (≤{max_distance}%)"
+
+        print_section_header(title, CONSOLE_WIDTH)
+
+        stocks = self.get_stocks_above_sma(sma_period, max_distance)
+
         if stocks is None or stocks.empty:
             print("No stocks found above SMA or no data available.")
             print("Try running 'Fetch Latest Data' first.")
             return
-        
+
         # Format the data for display
         display_data = []
         for _, row in stocks.iterrows():
@@ -155,7 +239,7 @@ class TechnicalAnalyzer:
                 f"{row['percentage_above_sma']:.2f}%",
                 row['date']
             ])
-        
+
         headers = ['Symbol', 'Current Price', f'{sma_period}-Day SMA', '% Above SMA', 'Date']
         print(tabulate(display_data, headers=headers, tablefmt="grid"))
         print(f"\nTotal stocks above {sma_period}-day SMA: {len(display_data)}")

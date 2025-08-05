@@ -37,11 +37,18 @@ class NSEStocksApp:
         
         missing_modules = []
         
+        import importlib.util
+
         for module in required_modules:
             try:
-                __import__(module)
-                print(f"✓ {module}")
-            except ImportError:
+                # Use lightweight module existence check
+                spec = importlib.util.find_spec(module)
+                if spec is None:
+                    print(f"✗ {module} (missing)")
+                    missing_modules.append(module)
+                else:
+                    print(f"✓ {module}")
+            except (ImportError, ValueError, ModuleNotFoundError):
                 print(f"✗ {module} (missing)")
                 missing_modules.append(module)
         

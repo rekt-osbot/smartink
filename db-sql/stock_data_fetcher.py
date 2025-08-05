@@ -229,9 +229,146 @@ class StockDataFetcher:
         
         return data
     
+    def fetch_multiple_stocks_bulk(self, symbols: List[str], period: str = "3mo") -> Dict[str, pd.DataFrame]:
+        """
+        Fetch data for multiple stocks using yfinance bulk download for better performance.
+
+        Args:
+            symbols (List[str]): List of stock symbols
+            period (str): Period for data
+
+        Returns:
+            Dict[str, pd.DataFrame]: Dictionary mapping symbols to their data
+        """
+        results = {}
+        total_symbols = len(symbols)
+
+        self._log(f"Fetching data for {total_symbols} stocks using bulk download...")
+
+        # Process in batches for better performance and memory management
+        batch_size = 100  # Larger batches for bulk download
+
+        for batch_start in range(0, total_symbols, batch_size):
+            batch_end = min(batch_start + batch_size, total_symbols)
+            batch_symbols = symbols[batch_start:batch_end]
+
+            self._log(f"Processing batch {batch_start//batch_size + 1}: symbols {batch_start+1}-{batch_end}")
+
+            try:
+                # Convert symbols to yfinance format
+                yf_symbols = [self.get_nse_symbol_for_yfinance(symbol) for symbol in batch_symbols]
+
+                # Bulk download using yfinance
+                bulk_data = yf.download(
+                    yf_symbols,
+                    period=period,
+                    group_by='ticker',
+                    auto_adjust=True,
+                    prepost=True,
+                    threads=True,
+                    progress=False
+                )
+
+                if bulk_data.empty:
+                    self._log(f"No data returned for batch {batch_start//batch_size + 1}")
+                    continue
+
+                # Process each stock from bulk data
+                for i, symbol in enumerate(batch_symbols):
+                    yf_symbol = yf_symbols[i]
+
+                    try:
+                        if len(batch_symbols) == 1:
+                            # Single stock - data is not multi-indexed
+                            stock_data = bulk_data
+                        else:
+                            # Multiple stocks - extract data for this symbol
+                            if yf_symbol in bulk_data.columns.levels[0]:
+                                stock_data = bulk_data[yf_symbol]
+                            else:
+                                self._log(f"No data for {symbol} ({yf_symbol})")
+                                continue
+
+                        # Check if we have valid data
+                        if stock_data.empty or len(stock_data) < 5:
+                            self._log(f"Insufficient data for {symbol}")
+                            continue
+
+                        # Reset index to make Date a column
+                        stock_data = stock_data.reset_index()
+
+                        # Rename columns to match our convention
+                        stock_data.rename(columns={
+                            'Date': 'date',
+                            'Open': 'open',
+                            'High': 'high',
+                            'Low': 'low',
+                            'Close': 'close',
+                            'Volume': 'volume'
+                        }, inplace=True)
+
+                        # Add symbol column
+                        stock_data['symbol'] = symbol
+
+                        # Select only the columns we need
+                        required_columns = ['symbol', 'date', 'open', 'high', 'low', 'close', 'volume']
+                        if all(col in stock_data.columns for col in required_columns):
+                            stock_data = stock_data[required_columns]
+
+                            # Calculate 20-day SMA
+                            stock_data = self.calculate_sma(stock_data, 20)
+                            results[symbol] = stock_data
+
+                            self._log(f"✓ Processed {symbol}: {len(stock_data)} records")
+                        else:
+                            self._log(f"Missing required columns for {symbol}")
+
+                    except Exception as e:
+                        self._log(f"Error processing {symbol}: {e}")
+                        continue
+
+            except Exception as e:
+                self._log(f"Error in bulk download for batch {batch_start//batch_size + 1}: {e}")
+                # Fallback to individual downloads for this batch
+                self._log("Falling back to individual downloads...")
+                for symbol in batch_symbols:
+                    data = self.fetch_stock_data(symbol, period)
+                    if data is not None:
+                        data = self.calculate_sma(data, 20)
+                        results[symbol] = data
+                    time.sleep(0.1)  # Rate limiting for fallback
+
+            # Pause between batches
+            if batch_end < total_symbols:
+                self._log(f"Batch completed. Pausing before next batch...")
+                time.sleep(2)  # 2 second pause between batches
+
+        self._log(f"Bulk fetch completed: {len(results)} successful out of {total_symbols} stocks")
+        return results
+
     def fetch_multiple_stocks(self, symbols: List[str], period: str = "3mo") -> Dict[str, pd.DataFrame]:
         """
-        Fetch data for multiple stocks with rate limiting and progress tracking.
+        Fetch data for multiple stocks with automatic fallback between bulk and individual methods.
+
+        Args:
+            symbols (List[str]): List of stock symbols
+            period (str): Period for data
+
+        Returns:
+            Dict[str, pd.DataFrame]: Dictionary mapping symbols to their data
+        """
+        # Try bulk download first for better performance
+        if len(symbols) > 10:
+            self._log("Using bulk download method for better performance...")
+            return self.fetch_multiple_stocks_bulk(symbols, period)
+        else:
+            # For small numbers, individual downloads might be more reliable
+            self._log("Using individual download method...")
+            return self.fetch_multiple_stocks_individual(symbols, period)
+
+    def fetch_multiple_stocks_individual(self, symbols: List[str], period: str = "3mo") -> Dict[str, pd.DataFrame]:
+        """
+        Fetch data for multiple stocks individually (fallback method).
 
         Args:
             symbols (List[str]): List of stock symbols
@@ -245,61 +382,26 @@ class StockDataFetcher:
         successful_fetches = 0
         failed_fetches = 0
 
-        self._log(f"Fetching data for {total_symbols} stocks...")
+        self._log(f"Fetching data for {total_symbols} stocks individually...")
 
-        # Process in batches for better performance
-        batch_size = 50
-        for batch_start in range(0, total_symbols, batch_size):
-            batch_end = min(batch_start + batch_size, total_symbols)
-            batch_symbols = symbols[batch_start:batch_end]
+        for i, symbol in enumerate(symbols, 1):
+            self._log(f"Progress: {i}/{total_symbols} - {symbol}")
 
-            self._log(f"Processing batch {batch_start//batch_size + 1}: symbols {batch_start+1}-{batch_end}")
+            data = self.fetch_stock_data(symbol, period)
+            if data is not None:
+                # Calculate 20-day SMA
+                data = self.calculate_sma(data, 20)
+                results[symbol] = data
+                successful_fetches += 1
+            else:
+                failed_fetches += 1
 
-            for i, symbol in enumerate(batch_symbols):
-                overall_progress = batch_start + i + 1
-                self._log(f"Progress: {overall_progress}/{total_symbols} - {symbol}")
+            # Rate limiting - pause between requests
+            if i < total_symbols:
+                time.sleep(0.1)  # 100ms delay between requests
 
-                data = self.fetch_stock_data(symbol, period)
-                if data is not None:
-                    # Calculate 20-day SMA
-                    data = self.calculate_sma(data, 20)
-                    results[symbol] = data
-                    successful_fetches += 1
-                else:
-                    failed_fetches += 1
-
-                # Rate limiting - pause between requests
-                if overall_progress < total_symbols:
-                    time.sleep(0.05)  # 50ms delay between requests for faster processing
-
-            # Longer pause between batches
-            if batch_end < total_symbols:
-                self._log(f"Batch completed. Pausing before next batch...")
-                time.sleep(1)  # 1 second pause between batches
-
-        self._log(f"Fetch completed: {successful_fetches} successful, {failed_fetches} failed out of {total_symbols} stocks")
+        self._log(f"Individual fetch completed: {successful_fetches} successful, {failed_fetches} failed out of {total_symbols} stocks")
         return results
-    
-    def get_popular_nse_stocks(self) -> List[str]:
-        """
-        Get a curated list of popular NSE stocks that work well with yfinance.
-
-        Returns:
-            List[str]: List of popular stock symbols
-        """
-        # Popular NSE stocks that are definitely available on yfinance
-        popular_stocks = [
-            'RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'HINDUNILVR', 'ICICIBANK',
-            'KOTAKBANK', 'BHARTIARTL', 'ITC', 'SBIN', 'BAJFINANCE', 'ASIANPAINT',
-            'MARUTI', 'AXISBANK', 'LT', 'TITAN', 'NESTLEIND', 'ULTRACEMCO',
-            'WIPRO', 'ONGC', 'TECHM', 'SUNPHARMA', 'POWERGRID', 'NTPC',
-            'COALINDIA', 'TATAMOTORS', 'BAJAJFINSV', 'HCLTECH', 'DRREDDY',
-            'BRITANNIA', 'EICHERMOT', 'ADANIPORTS', 'JSWSTEEL', 'GRASIM',
-            'CIPLA', 'TATASTEEL', 'BPCL', 'HEROMOTOCO', 'DIVISLAB', 'INDUSINDBK',
-            'ADANIENT', 'APOLLOHOSP', 'TATACONSUM', 'HINDALCO', 'SHREECEM',
-            'UPL', 'SBILIFE', 'HDFCLIFE', 'PIDILITIND', 'GODREJCP'
-        ]
-        return popular_stocks
 
     def get_stocks_from_database(self, use_popular_only: bool = False) -> List[str]:
         """
@@ -332,99 +434,3 @@ class StockDataFetcher:
         except Exception as e:
             self._log(f"Error getting stocks from database: {e}")
             return []
-    
-    def identify_stocks_above_sma(self, stock_data: Dict[str, pd.DataFrame]) -> List[Dict]:
-        """
-        Identify stocks trading above their 20-day SMA.
-        
-        Args:
-            stock_data (Dict[str, pd.DataFrame]): Stock data dictionary
-            
-        Returns:
-            List[Dict]: List of stocks above SMA with details
-        """
-        stocks_above_sma = []
-        
-        for symbol, data in stock_data.items():
-            if data.empty or 'sma_20' not in data.columns:
-                continue
-            
-            # Get the latest data point
-            latest = data.iloc[-1]
-            
-            # Check if current price is above SMA and SMA is not NaN
-            if pd.notna(latest['sma_20']) and latest['close'] > latest['sma_20']:
-                stocks_above_sma.append({
-                    'symbol': symbol,
-                    'date': latest['date'],
-                    'close': latest['close'],
-                    'sma_20': latest['sma_20'],
-                    'percentage_above_sma': ((latest['close'] - latest['sma_20']) / latest['sma_20']) * 100
-                })
-        
-        # Sort by percentage above SMA (descending)
-        stocks_above_sma.sort(key=lambda x: x['percentage_above_sma'], reverse=True)
-        
-        self._log(f"Found {len(stocks_above_sma)} stocks above 20-day SMA")
-        return stocks_above_sma
-    
-    def identify_open_high_patterns(self, stock_data: Dict[str, pd.DataFrame]) -> List[Dict]:
-        """
-        Identify stocks with open=high patterns.
-        
-        Args:
-            stock_data (Dict[str, pd.DataFrame]): Stock data dictionary
-            
-        Returns:
-            List[Dict]: List of stocks with open=high patterns
-        """
-        open_high_patterns = []
-        
-        for symbol, data in stock_data.items():
-            if len(data) < 2:
-                continue
-            
-            # Sort by date
-            data = data.sort_values('date')
-            
-            # Get last two days
-            yesterday = data.iloc[-2] if len(data) >= 2 else None
-            today = data.iloc[-1]
-            
-            # Pattern 1: Yesterday open=high, today trading above yesterday's high
-            if yesterday is not None:
-                yesterday_open_equals_high = abs(yesterday['open'] - yesterday['high']) < (yesterday['high'] * 0.001)  # 0.1% tolerance
-                today_above_yesterday_high = today['close'] > yesterday['high']
-                
-                if yesterday_open_equals_high and today_above_yesterday_high:
-                    open_high_patterns.append({
-                        'symbol': symbol,
-                        'pattern_type': 'yesterday_open_high_today_above',
-                        'yesterday_date': yesterday['date'],
-                        'yesterday_open': yesterday['open'],
-                        'yesterday_high': yesterday['high'],
-                        'today_date': today['date'],
-                        'today_close': today['close'],
-                        'breakout_percentage': ((today['close'] - yesterday['high']) / yesterday['high']) * 100
-                    })
-            
-            # Pattern 2: Today open=high and currently trading above that high
-            today_open_equals_high = abs(today['open'] - today['high']) < (today['high'] * 0.001)  # 0.1% tolerance
-            today_close_above_high = today['close'] > today['high']
-            
-            if today_open_equals_high and today_close_above_high:
-                open_high_patterns.append({
-                    'symbol': symbol,
-                    'pattern_type': 'today_open_high_now_above',
-                    'today_date': today['date'],
-                    'today_open': today['open'],
-                    'today_high': today['high'],
-                    'current_close': today['close'],
-                    'breakout_percentage': ((today['close'] - today['high']) / today['high']) * 100
-                })
-        
-        # Sort by breakout percentage (descending)
-        open_high_patterns.sort(key=lambda x: x.get('breakout_percentage', 0), reverse=True)
-        
-        self._log(f"Found {len(open_high_patterns)} stocks with open=high patterns")
-        return open_high_patterns
