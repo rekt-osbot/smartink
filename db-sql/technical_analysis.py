@@ -43,7 +43,7 @@ class TechnicalAnalyzer:
         """
         return self.data_manager.setup_extended_schema()
     
-    def fetch_and_store_data(self, symbols: List[str] = None, period: str = "3mo", use_popular_only: bool = True) -> bool:
+    def fetch_and_store_data(self, symbols: List[str] = None, period: str = "3mo", use_popular_only: bool = False, max_stocks: int = None) -> bool:
         """
         Fetch stock data and store in database.
 
@@ -51,6 +51,7 @@ class TechnicalAnalyzer:
             symbols (List[str], optional): List of symbols to fetch. If None, gets from database
             period (str): Period for data fetching
             use_popular_only (bool): If True, use only popular stocks that work well with yfinance
+            max_stocks (int, optional): Maximum number of stocks to fetch. If None, fetches all
 
         Returns:
             bool: True if successful
@@ -65,17 +66,19 @@ class TechnicalAnalyzer:
                         symbols = self.fetcher.get_popular_nse_stocks()
                         self._log("Using hardcoded popular stocks as fallback")
                 else:
+                    # Get ALL stocks from database
                     symbols = self.fetcher.get_stocks_from_database()
 
                 if not symbols:
                     self._log("No symbols found")
                     return False
 
-            # Limit to reasonable number for demo purposes
-            max_stocks = 30 if use_popular_only else 20
-            if len(symbols) > max_stocks:
-                self._log(f"Limiting to first {max_stocks} stocks out of {len(symbols)} for demo")
+            # Apply max_stocks limit if specified
+            if max_stocks and len(symbols) > max_stocks:
+                self._log(f"Limiting to first {max_stocks} stocks out of {len(symbols)}")
                 symbols = symbols[:max_stocks]
+            else:
+                self._log(f"Fetching data for all {len(symbols)} stocks from database")
             
             self._log(f"Fetching data for {len(symbols)} stocks...")
             

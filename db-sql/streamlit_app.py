@@ -78,7 +78,9 @@ def main():
         st.subheader("📊 Data Management")
         
         if st.button("🔄 Fetch Latest Data", type="primary", use_container_width=True):
-            fetch_stock_data()
+            use_popular_only = (fetch_mode == "Popular Stocks Only")
+            max_stocks_param = max_stocks if max_stocks > 0 else None
+            fetch_stock_data(use_popular_only, max_stocks_param)
         
         if st.session_state.last_fetch_time:
             st.success(f"Last updated: {st.session_state.last_fetch_time.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -93,6 +95,28 @@ def main():
         # Settings
         st.subheader("⚙️ Settings")
         sma_period = st.selectbox("SMA Period", [20, 50], index=0)
+
+        # Data fetch options
+        st.subheader("📊 Data Options")
+        fetch_mode = st.radio(
+            "Fetch Mode",
+            ["All NSE Stocks", "Popular Stocks Only"],
+            index=0,
+            help="All NSE Stocks: Fetch data for all stocks in database\nPopular Stocks: Only fetch reliable stocks"
+        )
+
+        if fetch_mode == "All NSE Stocks":
+            max_stocks = st.number_input(
+                "Max Stocks (0 = All)",
+                min_value=0,
+                max_value=5000,
+                value=0,
+                step=50,
+                help="Limit number of stocks to fetch (0 = fetch all stocks)"
+            )
+        else:
+            max_stocks = 50
+
         auto_refresh = st.checkbox("Auto-refresh (30s)", value=False)
     
     # Auto-refresh logic
@@ -110,42 +134,55 @@ def main():
     elif page == "📋 Data Explorer":
         show_data_explorer()
 
-def fetch_stock_data():
+def fetch_stock_data(use_popular_only=False, max_stocks=None):
     """Fetch latest stock data with progress indication."""
-    
+
     with st.spinner("🔄 Setting up database schema..."):
         if not st.session_state.analyzer.setup_database():
             st.error("❌ Failed to setup database schema")
             return
-    
+
     progress_bar = st.progress(0)
     status_text = st.empty()
-    
+
     try:
-        status_text.text("📡 Fetching stock data...")
+        if use_popular_only:
+            status_text.text("📡 Fetching popular stock data...")
+        else:
+            if max_stocks:
+                status_text.text(f"📡 Fetching data for up to {max_stocks} stocks...")
+            else:
+                status_text.text("📡 Fetching data for ALL NSE stocks...")
+
         progress_bar.progress(25)
-        
-        # Fetch data
-        if st.session_state.analyzer.fetch_and_store_data(use_popular_only=True):
+
+        # Fetch data with new parameters
+        if st.session_state.analyzer.fetch_and_store_data(
+            use_popular_only=use_popular_only,
+            max_stocks=max_stocks
+        ):
             progress_bar.progress(75)
             status_text.text("💾 Storing data in database...")
-            
+
             progress_bar.progress(100)
             status_text.text("✅ Data fetch completed!")
-            
+
             st.session_state.data_fetched = True
             st.session_state.last_fetch_time = datetime.now()
-            
+
             time.sleep(1)
             status_text.empty()
             progress_bar.empty()
-            
-            st.success("🎉 Successfully fetched and stored stock data!")
+
+            # Show success message with details
+            stats = st.session_state.analyzer.get_summary_statistics()
+            total_stocks = stats.get('total_stocks_with_data', 0)
+            st.success(f"🎉 Successfully fetched and stored data for {total_stocks} stocks!")
             st.rerun()
-            
+
         else:
             st.error("❌ Failed to fetch stock data")
-            
+
     except Exception as e:
         st.error(f"❌ Error during data fetch: {str(e)}")
     finally:

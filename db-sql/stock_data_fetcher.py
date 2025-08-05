@@ -231,34 +231,53 @@ class StockDataFetcher:
     
     def fetch_multiple_stocks(self, symbols: List[str], period: str = "3mo") -> Dict[str, pd.DataFrame]:
         """
-        Fetch data for multiple stocks with rate limiting.
-        
+        Fetch data for multiple stocks with rate limiting and progress tracking.
+
         Args:
             symbols (List[str]): List of stock symbols
             period (str): Period for data
-            
+
         Returns:
             Dict[str, pd.DataFrame]: Dictionary mapping symbols to their data
         """
         results = {}
         total_symbols = len(symbols)
-        
+        successful_fetches = 0
+        failed_fetches = 0
+
         self._log(f"Fetching data for {total_symbols} stocks...")
-        
-        for i, symbol in enumerate(symbols, 1):
-            self._log(f"Progress: {i}/{total_symbols} - {symbol}")
-            
-            data = self.fetch_stock_data(symbol, period)
-            if data is not None:
-                # Calculate 20-day SMA
-                data = self.calculate_sma(data, 20)
-                results[symbol] = data
-            
-            # Rate limiting - pause between requests
-            if i < total_symbols:
-                time.sleep(0.1)  # 100ms delay between requests
-        
-        self._log(f"Successfully fetched data for {len(results)} out of {total_symbols} stocks")
+
+        # Process in batches for better performance
+        batch_size = 50
+        for batch_start in range(0, total_symbols, batch_size):
+            batch_end = min(batch_start + batch_size, total_symbols)
+            batch_symbols = symbols[batch_start:batch_end]
+
+            self._log(f"Processing batch {batch_start//batch_size + 1}: symbols {batch_start+1}-{batch_end}")
+
+            for i, symbol in enumerate(batch_symbols):
+                overall_progress = batch_start + i + 1
+                self._log(f"Progress: {overall_progress}/{total_symbols} - {symbol}")
+
+                data = self.fetch_stock_data(symbol, period)
+                if data is not None:
+                    # Calculate 20-day SMA
+                    data = self.calculate_sma(data, 20)
+                    results[symbol] = data
+                    successful_fetches += 1
+                else:
+                    failed_fetches += 1
+
+                # Rate limiting - pause between requests
+                if overall_progress < total_symbols:
+                    time.sleep(0.05)  # 50ms delay between requests for faster processing
+
+            # Longer pause between batches
+            if batch_end < total_symbols:
+                self._log(f"Batch completed. Pausing before next batch...")
+                time.sleep(1)  # 1 second pause between batches
+
+        self._log(f"Fetch completed: {successful_fetches} successful, {failed_fetches} failed out of {total_symbols} stocks")
         return results
     
     def get_popular_nse_stocks(self) -> List[str]:
