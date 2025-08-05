@@ -164,6 +164,51 @@ class NSEStocksApp:
             print(f"✗ Error importing dashboard: {e}")
         except Exception as e:
             print(f"✗ Error launching dashboard: {e}")
+
+    def launch_streamlit_dashboard(self):
+        """Launch the Streamlit web dashboard."""
+        print_step(6, "Launching Streamlit Web Dashboard")
+
+        try:
+            import subprocess
+            import webbrowser
+            import time
+
+            print("Starting Streamlit web dashboard...")
+            print("Dashboard will open in your default web browser.")
+            print("URL: http://localhost:8501")
+            print("(Press Ctrl+C to stop the dashboard)\n")
+
+            # Start Streamlit in a subprocess
+            process = subprocess.Popen([
+                "uv", "run", "streamlit", "run", "streamlit_app.py",
+                "--server.port", "8501",
+                "--server.address", "localhost"
+            ])
+
+            # Wait a moment for Streamlit to start
+            time.sleep(3)
+
+            # Open browser
+            try:
+                webbrowser.open("http://localhost:8501")
+            except:
+                pass  # Browser opening is optional
+
+            # Wait for process to complete
+            process.wait()
+
+        except KeyboardInterrupt:
+            print("\n\nStopping Streamlit dashboard...")
+            try:
+                process.terminate()
+            except:
+                pass
+            print("Returned to main menu.")
+        except ImportError as e:
+            print(f"✗ Error importing required modules: {e}")
+        except Exception as e:
+            print(f"✗ Error launching Streamlit dashboard: {e}")
     
     def show_main_menu(self):
         """Display the main application menu."""
@@ -174,12 +219,13 @@ class NSEStocksApp:
             print("Main Menu:")
             print("1. Setup/Refresh Database")
             print("2. Launch Query Interface")
-            print("3. Launch Stock Dashboard")
-            print("4. Check System Status")
-            print("5. Exit")
+            print("3. Launch Stock Dashboard (CLI)")
+            print("4. Launch Web Dashboard (Streamlit)")
+            print("5. Check System Status")
+            print("6. Exit")
             print("-" * 30)
             
-            choice = input("Select option (1-5): ").strip()
+            choice = input("Select option (1-6): ").strip()
 
             if choice == '1':
                 refresh = self.prompt_data_refresh()
@@ -199,15 +245,18 @@ class NSEStocksApp:
                 self.launch_stock_dashboard()
 
             elif choice == '4':
+                self.launch_streamlit_dashboard()
+
+            elif choice == '5':
                 self.show_system_status()
                 input("\nPress Enter to continue...")
 
-            elif choice == '5':
+            elif choice == '6':
                 print("Goodbye!")
                 break
 
             else:
-                print("Please enter a number between 1 and 5")
+                print("Please enter a number between 1 and 6")
                 input("Press Enter to continue...")
     
     def show_system_status(self):
