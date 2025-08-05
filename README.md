@@ -170,10 +170,39 @@ uv pip install -r requirements.txt
 
 # Or with regular pip
 pip install -r requirements.txt
+```
 
-# Run the application locally
+### **Two Official Entry Points:**
+
+#### **1. Interactive Web UI (Primary)**
+```bash
+# Run the Streamlit web application
 uv run streamlit run db-sql/streamlit_app.py
+```
 
+#### **2. CLI Automation (Administrative)**
+```bash
+# System check
+python db-sql/main.py --system-check
+
+# Refresh master stock list from NSE
+python db-sql/main.py --refresh-database
+
+# Fetch prices for popular stocks
+python db-sql/main.py --fetch-prices --popular-only
+
+# Fetch prices for up to 100 stocks
+python db-sql/main.py --fetch-prices --limit 100
+
+# Clean up old data
+python db-sql/main.py --cleanup-data
+
+# Verbose output
+python db-sql/main.py --system-check --verbose
+```
+
+### **Testing**
+```bash
 # Run tests
 uv run python db-sql/test_optimizations.py
 uv run python db-sql/test_actionable_opportunities.py

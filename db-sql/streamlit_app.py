@@ -97,6 +97,30 @@ def check_data_availability():
         st.session_state.data_fetched = False
         return False
 
+def ensure_data_is_fetched() -> bool:
+    """
+    Helper function to check for data availability and show appropriate warnings.
+
+    Returns:
+        bool: True if data is available, False otherwise
+    """
+    if not st.session_state.data_fetched:
+        if is_streamlit_cloud():
+            st.warning("""
+            ⚠️ **No price data available** - This is expected on first visit to Streamlit Cloud.
+
+            **To get started:**
+            1. **First time users**: Click "🌍 Update Master Stock List from NSE" to get the full stock universe
+            2. **Then**: Click "🔄 Fetch Latest Price Data" to get current prices
+            3. **Quick start**: Just use "Popular Stocks Only" (skips step 1)
+
+            💡 **Note**: Data is temporary on Streamlit Cloud and will need to be refetched each session.
+            """)
+        else:
+            st.warning("⚠️ No price data available. Please fetch stock data first using the sidebar.")
+        return False
+    return True
+
 # Cached functions to avoid repeated database queries
 @st.cache_data(ttl=300)  # Cache for 5 minutes
 def get_cached_summary_statistics(_analyzer):
@@ -267,20 +291,7 @@ def show_dashboard_overview(sma_period):
 
     st.header("📊 Stock Market Dashboard")
 
-    if not st.session_state.data_fetched:
-        if is_streamlit_cloud():
-            st.warning("""
-            ⚠️ **No price data available** - This is expected on first visit to Streamlit Cloud.
-
-            **To get started:**
-            1. **First time users**: Click "🌍 Update Master Stock List from NSE" to get the full stock universe
-            2. **Then**: Click "🔄 Fetch Latest Price Data" to get current prices
-            3. **Quick start**: Just use "Popular Stocks Only" (skips step 1)
-
-            💡 **Note**: Data is temporary on Streamlit Cloud and will need to be refetched each session.
-            """)
-        else:
-            st.warning("⚠️ No price data available. Please fetch stock data first using the sidebar.")
+    if not ensure_data_is_fetched():
         return
 
     try:
@@ -448,8 +459,7 @@ def show_sma_breakout_opportunities(sma_period):
 
     st.header(f"🎯 SMA Breakout Opportunities ({sma_period}-Day)")
 
-    if not st.session_state.data_fetched:
-        st.warning("⚠️ No data available. Please fetch stock data first using the sidebar.")
+    if not ensure_data_is_fetched():
         return
 
     # Add controls for breakout analysis
@@ -598,8 +608,7 @@ def show_stocks_above_sma(sma_period):
 
     st.header(f"📈 Stocks Above {sma_period}-Day SMA")
 
-    if not st.session_state.data_fetched:
-        st.warning("⚠️ No data available. Please fetch stock data first using the sidebar.")
+    if not ensure_data_is_fetched():
         return
 
     # Add filter for maximum distance
@@ -678,8 +687,7 @@ def show_breakout_patterns():
 
     st.header("🚀 Open = High Breakout Patterns")
 
-    if not st.session_state.data_fetched:
-        st.warning("⚠️ No data available. Please fetch stock data first using the sidebar.")
+    if not ensure_data_is_fetched():
         return
 
     patterns = get_cached_breakout_patterns(st.session_state.analyzer)
@@ -743,8 +751,7 @@ def show_data_explorer():
 
     st.header("📋 Data Explorer")
 
-    if not st.session_state.data_fetched:
-        st.warning("⚠️ No data available. Please fetch stock data first using the sidebar.")
+    if not ensure_data_is_fetched():
         return
 
     # Get latest prices (cached)

@@ -25,11 +25,7 @@ PRIMARY_CSV_URL = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
 # Alternative URL for daily bhav data (simpler structure)
 BHAV_CSV_URL = "https://archives.nseindia.com/products/content/sec_bhavdata_full.csv"
 
-# Local CSV files to try (in order of preference)
-LOCAL_CSV_FILES = [
-    "sample_with_dates.csv",
-    "nifty_500_stocks.csv"
-]
+# Removed LOCAL_CSV_FILES - application now uses URL-based data sources only
 
 # HTTP request configuration
 REQUEST_TIMEOUT = 30
