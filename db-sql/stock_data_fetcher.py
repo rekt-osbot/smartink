@@ -403,9 +403,76 @@ class StockDataFetcher:
         self._log(f"Individual fetch completed: {successful_fetches} successful, {failed_fetches} failed out of {total_symbols} stocks")
         return results
 
+    def get_comprehensive_nse_stocks(self) -> List[str]:
+        """
+        Get a comprehensive list of NSE stocks for cloud deployment.
+        This includes popular stocks plus additional liquid stocks.
+
+        Returns:
+            List[str]: Comprehensive list of NSE stock symbols
+        """
+        # Start with popular stocks
+        comprehensive_stocks = self.get_popular_nse_stocks().copy()
+
+        # Add more liquid and well-known NSE stocks
+        additional_stocks = [
+            # Banking & Financial Services
+            'BANKBARODA', 'CANFINHOME', 'CHOLAFIN', 'FEDERALBNK', 'IDFCFIRSTB',
+            'PNB', 'RBLBANK', 'YESBANK', 'BAJAJHLDNG', 'MUTHOOTFIN',
+
+            # IT & Technology
+            'MINDTREE', 'MPHASIS', 'PERSISTENT', 'LTTS', 'COFORGE',
+
+            # Pharmaceuticals
+            'BIOCON', 'CADILAHC', 'GLENMARK', 'LUPIN', 'TORNTPHARM',
+            'ALKEM', 'AUROPHARMA', 'ZYDUSLIFE',
+
+            # Consumer Goods
+            'DABUR', 'MARICO', 'COLPAL', 'EMAMILTD', 'GODREJIND',
+            'JUBLFOOD', 'TATACONSUM', 'VBL',
+
+            # Automobiles
+            'ASHOKLEY', 'BAJAJ-AUTO', 'ESCORTS', 'MAHINDRA', 'MOTHERSON',
+            'TVSMOTOR', 'BOSCHLTD', 'EXIDEIND',
+
+            # Metals & Mining
+            'VEDL', 'NMDC', 'SAIL', 'JINDALSTEL', 'RATNAMANI',
+            'WELCORP', 'MOIL', 'NATIONALUM',
+
+            # Energy & Utilities
+            'ADANIGREEN', 'ADANITRANS', 'GAIL', 'IOC', 'RELIANCE',
+            'TATAPOWER', 'TORNTPOWER', 'NHPC',
+
+            # Telecom
+            'IDEA', 'INDUSINDBK',
+
+            # Cement
+            'ACC', 'AMBUJACEMENT', 'RAMCOCEM', 'JKCEMENT',
+
+            # Textiles
+            'ARVIND', 'RAYMOND', 'WELSPUNIND',
+
+            # Infrastructure
+            'IRCTC', 'CONCOR', 'GMRINFRA', 'L&TFH',
+
+            # Chemicals
+            'AAVAS', 'DEEPAKNTR', 'GNFC', 'PIDILITIND',
+
+            # Others
+            'DIXON', 'POLYCAB', 'CROMPTON', 'HAVELLS', 'VOLTAS'
+        ]
+
+        # Add additional stocks, avoiding duplicates
+        for stock in additional_stocks:
+            if stock not in comprehensive_stocks:
+                comprehensive_stocks.append(stock)
+
+        self._log(f"Generated comprehensive stock list with {len(comprehensive_stocks)} symbols")
+        return comprehensive_stocks
+
     def get_stocks_from_database(self, use_popular_only: bool = False) -> List[str]:
         """
-        Get list of stock symbols from the database.
+        Get list of stock symbols from the database with cloud-friendly fallbacks.
 
         Args:
             use_popular_only (bool): If True, filter to only popular stocks
@@ -428,9 +495,18 @@ class StockDataFetcher:
                 self._log(f"Found {len(symbols)} stocks in database")
                 return symbols
             else:
-                self._log("No stocks found in database")
-                return []
+                self._log("No stocks found in database, using fallback stock list")
+                # Cloud-friendly fallback
+                if use_popular_only:
+                    return self.get_popular_nse_stocks()
+                else:
+                    return self.get_comprehensive_nse_stocks()
 
         except Exception as e:
             self._log(f"Error getting stocks from database: {e}")
-            return []
+            self._log("Using fallback stock list")
+            # Cloud-friendly fallback
+            if use_popular_only:
+                return self.get_popular_nse_stocks()
+            else:
+                return self.get_comprehensive_nse_stocks()

@@ -123,6 +123,15 @@ def get_cached_latest_prices(_analyzer, limit=1000):
     """Get latest prices with caching."""
     return _analyzer.data_manager.get_latest_prices(limit=limit)
 
+@st.cache_data(ttl=300)  # Cache for 5 minutes
+def get_cached_master_stock_count(_analyzer):
+    """Get count of stocks in master list with caching."""
+    try:
+        symbols = _analyzer.fetcher.get_stocks_from_database()
+        return len(symbols) if symbols else 0
+    except Exception:
+        return 0
+
 def main():
     """Main dashboard function."""
 
@@ -149,31 +158,31 @@ def main():
     with st.sidebar:
         st.header("🔧 Dashboard Controls")
 
-        # Data fetch section
-        st.subheader("📊 Data Management")
+        # Price Data Section (Frequent Updates)
+        st.subheader("📊 Price Data (Frequent)")
+        st.info("Fetch daily prices for analysis.")
 
-        # Data fetch options
-        st.subheader("📊 Data Options")
         fetch_mode = st.radio(
-            "Fetch Mode",
-            ["All NSE Stocks", "Popular Stocks Only"],
+            "Select stock universe",
+            ["Popular Stocks Only", "All Stocks in DB"],
             index=0,
-            help="All NSE Stocks: Fetch data for all stocks in database\nPopular Stocks: Only fetch reliable stocks"
+            key='fetch_mode',
+            help="Popular Stocks: Curated list. All Stocks: Use all symbols currently in the master list."
         )
 
-        if fetch_mode == "All NSE Stocks":
+        if fetch_mode == "All Stocks in DB":
             max_stocks = st.number_input(
-                "Max Stocks (0 = All)",
+                "Max Stocks to Fetch (0 = All)",
                 min_value=0,
                 max_value=5000,
-                value=0,
+                value=50,  # Default to 50 to prevent accidental large fetches
                 step=50,
-                help="Limit number of stocks to fetch (0 = fetch all stocks)"
+                help="Limit number of stocks to fetch price data for (0 = fetch all)."
             )
         else:
-            max_stocks = 50
+            max_stocks = 50  # Popular stocks are a fixed list
 
-        if st.button("🔄 Fetch Latest Data", type="primary", use_container_width=True):
+        if st.button("🔄 Fetch Latest Price Data", type="primary", use_container_width=True):
             use_popular_only = (fetch_mode == "Popular Stocks Only")
             max_stocks_param = max_stocks if max_stocks > 0 else None
 
@@ -182,7 +191,7 @@ def main():
 
             # Show cloud-specific message
             if is_streamlit_cloud():
-                st.info("🌐 Fetching fresh data for this session (data will not persist after app restart)")
+                st.info("🌐 Fetching fresh price data for this session...")
 
             # Use streaming fetch for better UX
             with st.spinner("🔄 Setting up database schema..."):
@@ -193,13 +202,34 @@ def main():
                     if stream_stock_data_fetch(st.session_state.analyzer, use_popular_only, max_stocks_param):
                         # Force refresh of data availability check
                         check_data_availability()
-                        st.success("✅ Data fetched successfully!")
+                        st.success("✅ Price data fetched successfully!")
                         st.rerun()
                     else:
-                        st.error("❌ Data fetch failed")
+                        st.error("❌ Price data fetch failed")
 
         if st.session_state.last_fetch_time:
-            st.success(f"Last updated: {st.session_state.last_fetch_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            st.success(f"Prices last updated: {st.session_state.last_fetch_time.strftime('%H:%M:%S')}")
+
+        st.divider()
+
+        # Master Stock List Section (Infrequent Updates)
+        st.subheader("📦 Master Stock List (Infrequent)")
+        st.info("Update the entire list of tradable stocks from NSE.")
+
+        if st.button("🌍 Update Master Stock List from NSE", use_container_width=True):
+            with st.spinner("Fetching latest stock list from NSE and rebuilding database... This may take a moment."):
+                if st.session_state.analyzer.refresh_master_stock_list():
+                    st.success("✅ Master stock list updated successfully!")
+                    st.info("The new stock list is now available for price fetching.")
+                    st.cache_data.clear()
+                    time.sleep(2)
+                    st.rerun()
+                else:
+                    st.error("❌ Failed to update the master stock list.")
+
+        st.caption("Run this periodically (e.g., monthly) to include new stocks or remove delisted ones.")
+
+        st.divider()
 
         # Navigation
         st.subheader("🧭 Navigation")
@@ -240,17 +270,17 @@ def show_dashboard_overview(sma_period):
     if not st.session_state.data_fetched:
         if is_streamlit_cloud():
             st.warning("""
-            ⚠️ **No data available** - This is expected on first visit to Streamlit Cloud.
+            ⚠️ **No price data available** - This is expected on first visit to Streamlit Cloud.
 
             **To get started:**
-            1. Click "🔄 Fetch Latest Data" in the sidebar
-            2. Choose "Popular Stocks Only" for a quick start (recommended)
-            3. Or "All NSE Stocks" for comprehensive analysis (takes longer)
+            1. **First time users**: Click "🌍 Update Master Stock List from NSE" to get the full stock universe
+            2. **Then**: Click "🔄 Fetch Latest Price Data" to get current prices
+            3. **Quick start**: Just use "Popular Stocks Only" (skips step 1)
 
             💡 **Note**: Data is temporary on Streamlit Cloud and will need to be refetched each session.
             """)
         else:
-            st.warning("⚠️ No data available. Please fetch stock data first using the sidebar.")
+            st.warning("⚠️ No price data available. Please fetch stock data first using the sidebar.")
         return
 
     try:
@@ -265,16 +295,24 @@ def show_dashboard_overview(sma_period):
         return
     
     # Metrics row
-    col1, col2, col3, col4 = st.columns(4)
-    
+    col1, col2, col3, col4, col5 = st.columns(5)
+
     with col1:
+        master_count = get_cached_master_stock_count(st.session_state.analyzer)
         st.metric(
-            label="📊 Total Stocks",
+            label="📦 Master List",
+            value=master_count,
+            help="Total stocks in NSE master list"
+        )
+
+    with col2:
+        st.metric(
+            label="📊 With Price Data",
             value=stats.get('total_stocks_with_data', 0),
-            help="Total number of stocks with available data"
+            help="Stocks with current price data"
         )
     
-    with col2:
+    with col3:
         # Get actionable breakout opportunities
         try:
             breakout_opportunities = get_cached_stocks_near_sma_breakout(st.session_state.analyzer, sma_period, 5.0)
@@ -283,19 +321,19 @@ def show_dashboard_overview(sma_period):
             breakout_count = 0
 
         st.metric(
-            label=f"🎯 SMA Breakout Opportunities",
+            label=f"🎯 Breakout Opps",
             value=breakout_count,
             help=f"Stocks within ±5% of {sma_period}-day SMA (actionable opportunities)"
         )
-    
-    with col3:
+
+    with col4:
         st.metric(
             label="🚀 Breakout Patterns",
             value=stats.get('open_high_patterns', 0),
             help="Stocks showing open=high breakout patterns"
         )
-    
-    with col4:
+
+    with col5:
         total = stats.get('total_stocks_with_data', 0)
         if total > 0:
             momentum_pct = (stats.get('stocks_above_20_sma', 0) / total) * 100

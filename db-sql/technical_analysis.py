@@ -12,7 +12,8 @@ from tabulate import tabulate
 from stock_data_fetcher import StockDataFetcher
 from stock_data_manager import StockDataManager
 from utils import print_step, print_section_header
-from config import CONSOLE_WIDTH
+from config import CONSOLE_WIDTH, PRIMARY_CSV_URL, BHAV_CSV_URL
+from data_processor import DataProcessor
 
 
 class TechnicalAnalyzer:
@@ -37,11 +38,52 @@ class TechnicalAnalyzer:
     def setup_database(self) -> bool:
         """
         Set up the extended database schema.
-        
+
         Returns:
             bool: True if successful
         """
         return self.data_manager.setup_extended_schema()
+
+    def refresh_master_stock_list(self) -> bool:
+        """
+        Fetches the latest list of all tradable stocks from NSE's primary source
+        and rebuilds the main 'tradable_stocks' table.
+
+        Returns:
+            bool: True if successful
+        """
+        self._log("Attempting to refresh the master stock list from NSE...")
+
+        # We need a DataProcessor instance to fetch and clean the master list
+        data_processor = DataProcessor(verbose=self.verbose)
+
+        self._log(f"Fetching master list from primary source: {PRIMARY_CSV_URL}")
+        df = data_processor.load_csv_from_url(PRIMARY_CSV_URL)
+
+        # Fallback if the primary URL fails
+        if df is None:
+            self._log(f"Primary source failed. Trying fallback: {BHAV_CSV_URL}")
+            df = data_processor.load_csv_from_url(BHAV_CSV_URL)
+
+        if df is None:
+            self._log("✗ Failed to fetch master stock list from any online source.")
+            return False
+
+        self._log("✓ Master list data fetched successfully. Cleaning data...")
+        cleaned_df = data_processor.clean_dataframe(df)
+
+        self._log("Rebuilding the 'tradable_stocks' table with fresh data...")
+        # Use the analyzer's own data_manager to perform the update
+        from database_manager import DatabaseManager
+        db_manager = DatabaseManager(verbose=self.verbose)
+        success = db_manager.create_and_populate_table(cleaned_df)
+
+        if success:
+            self._log(f"✓ Master stock list updated successfully with {len(cleaned_df)} stocks.")
+        else:
+            self._log("✗ Failed to update the master stock list in the database.")
+
+        return success
     
     def fetch_and_store_data(self, symbols: List[str] = None, period: str = "3mo", use_popular_only: bool = False, max_stocks: int = None, progress_callback=None) -> bool:
         """
