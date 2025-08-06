@@ -87,170 +87,233 @@ class StockFilter:
             self._log(f"Error in series filtering: {e}")
             return []
     
-    def get_market_cap_data(self, symbols: List[str], sample_size: int = 50) -> Dict[str, float]:
+    def get_market_cap_and_volume_data(self, symbols: List[str], sample_size: int = 50) -> Dict[str, Dict]:
         """
-        Get market cap data for a sample of stocks to establish filtering criteria.
-        
+        Get market cap and trading volume data efficiently using bulk yfinance calls.
+
         Args:
             symbols: List of stock symbols
-            sample_size: Number of stocks to sample for market cap analysis
-            
+            sample_size: Number of stocks to sample for analysis
+
         Returns:
-            Dictionary mapping symbols to market cap in crores
+            Dictionary mapping symbols to their market cap (crores) and trading volume (lakhs)
         """
         if not symbols:
             return {}
-        
+
         # Sample stocks to avoid hitting API limits
         sample_symbols = symbols[:sample_size] if len(symbols) > sample_size else symbols
-        market_caps = {}
-        
-        self._log(f"Fetching market cap data for {len(sample_symbols)} stocks...")
-        
-        for i, symbol in enumerate(sample_symbols):
-            try:
-                # Convert NSE symbol to yfinance format
-                yf_symbol = f"{symbol}.NS"
-                ticker = yf.Ticker(yf_symbol)
-                info = ticker.info
-                
-                # Get market cap in INR
-                market_cap_inr = info.get('marketCap', 0)
-                if market_cap_inr and market_cap_inr > 0:
-                    # Convert to crores (1 crore = 10 million)
-                    market_cap_cr = market_cap_inr / 10_000_000
-                    market_caps[symbol] = market_cap_cr
-                
-                # Rate limiting
-                if i < len(sample_symbols) - 1:
-                    time.sleep(0.1)
-                    
-            except Exception as e:
-                self._log(f"Error fetching market cap for {symbol}: {e}")
-                continue
-        
-        self._log(f"Successfully fetched market cap for {len(market_caps)} stocks")
-        return market_caps
+        stock_data = {}
+
+        self._log(f"Fetching market cap and volume data for {len(sample_symbols)} stocks...")
+
+        try:
+            # Convert to yfinance format
+            yf_symbols = [f"{symbol}.NS" for symbol in sample_symbols]
+
+            # Bulk download for efficiency
+            bulk_data = yf.download(
+                yf_symbols,
+                period="5d",
+                group_by='ticker',
+                auto_adjust=True,
+                prepost=False,
+                threads=True,
+                progress=False
+            )
+
+            if bulk_data.empty:
+                self._log("No bulk data returned from yfinance")
+                return {}
+
+            # Process each stock
+            for i, symbol in enumerate(sample_symbols):
+                try:
+                    yf_symbol = yf_symbols[i]
+
+                    # Get ticker info for market cap
+                    ticker = yf.Ticker(yf_symbol)
+                    info = ticker.info
+
+                    # Extract market cap
+                    market_cap_inr = info.get('marketCap', 0)
+                    market_cap_cr = 0
+                    if market_cap_inr and market_cap_inr > 0:
+                        market_cap_cr = market_cap_inr / 10_000_000  # Convert to crores
+
+                    # Extract trading volume from historical data
+                    avg_trading_value_l = 0
+                    if len(yf_symbols) == 1:
+                        # Single stock case
+                        hist_data = bulk_data
+                    else:
+                        # Multiple stocks case
+                        hist_data = bulk_data[yf_symbol] if yf_symbol in bulk_data.columns.get_level_values(0) else pd.DataFrame()
+
+                    if not hist_data.empty and 'Close' in hist_data.columns and 'Volume' in hist_data.columns:
+                        # Calculate average daily trading value
+                        hist_data_clean = hist_data.dropna()
+                        if len(hist_data_clean) > 0:
+                            trading_values = hist_data_clean['Close'] * hist_data_clean['Volume']
+                            avg_trading_value = trading_values.mean()
+                            if avg_trading_value and avg_trading_value > 0:
+                                avg_trading_value_l = avg_trading_value / 100_000  # Convert to lakhs
+
+                    stock_data[symbol] = {
+                        'market_cap_cr': market_cap_cr,
+                        'avg_trading_value_l': avg_trading_value_l
+                    }
+
+                except Exception as e:
+                    self._log(f"Error processing data for {symbol}: {e}")
+                    continue
+
+        except Exception as e:
+            self._log(f"Error in bulk data fetch: {e}")
+            return {}
+
+        self._log(f"Successfully fetched data for {len(stock_data)} stocks")
+        return stock_data
     
     def get_trading_volume_data(self, symbols: List[str], sample_size: int = 50) -> Dict[str, float]:
         """
         Get recent trading volume data to filter low-volume stocks.
-        
+        This method is deprecated - use get_market_cap_and_volume_data for efficiency.
+
         Args:
             symbols: List of stock symbols
             sample_size: Number of stocks to sample for volume analysis
-            
+
         Returns:
             Dictionary mapping symbols to average daily trading value in lakhs
         """
-        if not symbols:
-            return {}
-        
-        # Sample stocks to avoid hitting API limits
-        sample_symbols = symbols[:sample_size] if len(symbols) > sample_size else symbols
-        trading_values = {}
-        
-        self._log(f"Fetching trading volume data for {len(sample_symbols)} stocks...")
-        
-        for i, symbol in enumerate(sample_symbols):
-            try:
-                # Convert NSE symbol to yfinance format
-                yf_symbol = f"{symbol}.NS"
-                ticker = yf.Ticker(yf_symbol)
-                
-                # Get last 5 days of data
-                hist = ticker.history(period="5d")
-                if not hist.empty and len(hist) > 0:
-                    # Calculate average daily trading value (price * volume)
-                    hist['trading_value'] = hist['Close'] * hist['Volume']
-                    avg_trading_value = hist['trading_value'].mean()
-                    
-                    if avg_trading_value and avg_trading_value > 0:
-                        # Convert to lakhs (1 lakh = 100,000)
-                        avg_trading_value_l = avg_trading_value / 100_000
-                        trading_values[symbol] = avg_trading_value_l
-                
-                # Rate limiting
-                if i < len(sample_symbols) - 1:
-                    time.sleep(0.1)
-                    
-            except Exception as e:
-                self._log(f"Error fetching trading volume for {symbol}: {e}")
-                continue
-        
-        self._log(f"Successfully fetched trading volume for {len(trading_values)} stocks")
-        return trading_values
+        # Use the more efficient combined method
+        combined_data = self.get_market_cap_and_volume_data(symbols, sample_size)
+        return {symbol: data['avg_trading_value_l'] for symbol, data in combined_data.items()}
     
-    def apply_comprehensive_filter(self, 
+    def apply_comprehensive_filter(self,
                                  use_market_cap: bool = True,
                                  use_trading_volume: bool = True,
                                  sample_size: int = 100) -> List[str]:
         """
         Apply comprehensive filtering to get optimized stock list.
-        
+
         Args:
             use_market_cap: Whether to apply market cap filtering
             use_trading_volume: Whether to apply trading volume filtering
             sample_size: Sample size for market data analysis
-            
+
         Returns:
             List of filtered stock symbols
         """
         self._log("Starting comprehensive stock filtering...")
-        
+
         # Step 1: Filter by series (exclude BE, BZ)
         stocks_after_series = self.get_stocks_by_series()
         if not stocks_after_series:
             return []
-        
+
         self._log(f"After series filter: {len(stocks_after_series)} stocks")
-        
-        # Step 2: Apply market cap filter if requested
-        if use_market_cap:
-            market_caps = self.get_market_cap_data(stocks_after_series, sample_size)
-            if market_caps:
-                # Filter stocks with sufficient market cap
-                stocks_with_good_mcap = [
-                    symbol for symbol, mcap in market_caps.items() 
-                    if mcap >= self.min_market_cap_cr
-                ]
-                self._log(f"After market cap filter (>={self.min_market_cap_cr}cr): {len(stocks_with_good_mcap)} stocks")
-                
-                # For stocks without market cap data, include them (conservative approach)
-                stocks_without_mcap = [s for s in stocks_after_series if s not in market_caps]
-                filtered_stocks = stocks_with_good_mcap + stocks_without_mcap
+
+        # Step 2: Apply market cap and trading volume filters efficiently
+        if use_market_cap or use_trading_volume:
+            # Get both market cap and volume data in one efficient call
+            combined_data = self.get_market_cap_and_volume_data(stocks_after_series, sample_size)
+
+            if combined_data:
+                # Filter based on criteria
+                stocks_passing_filters = []
+
+                for symbol, data in combined_data.items():
+                    mcap_ok = True
+                    volume_ok = True
+
+                    if use_market_cap:
+                        mcap_ok = data['market_cap_cr'] >= self.min_market_cap_cr
+
+                    if use_trading_volume:
+                        volume_ok = data['avg_trading_value_l'] >= self.min_daily_value_l
+
+                    if mcap_ok and volume_ok:
+                        stocks_passing_filters.append(symbol)
+
+                self._log(f"Stocks passing market data filters: {len(stocks_passing_filters)}")
+
+                # For stocks without market data, include them (conservative approach)
+                stocks_without_data = [s for s in stocks_after_series if s not in combined_data]
+                final_filtered_stocks = stocks_passing_filters + stocks_without_data
+
+                self._log(f"Stocks without market data (included): {len(stocks_without_data)}")
             else:
-                filtered_stocks = stocks_after_series
+                final_filtered_stocks = stocks_after_series
         else:
-            filtered_stocks = stocks_after_series
-        
-        # Step 3: Apply trading volume filter if requested
-        if use_trading_volume:
-            trading_volumes = self.get_trading_volume_data(filtered_stocks, sample_size)
-            if trading_volumes:
-                # Filter stocks with sufficient trading volume
-                stocks_with_good_volume = [
-                    symbol for symbol, volume in trading_volumes.items() 
-                    if volume >= self.min_daily_value_l
-                ]
-                self._log(f"After trading volume filter (>={self.min_daily_value_l}L): {len(stocks_with_good_volume)} stocks")
-                
-                # For stocks without volume data, include them (conservative approach)
-                stocks_without_volume = [s for s in filtered_stocks if s not in trading_volumes]
-                final_filtered_stocks = stocks_with_good_volume + stocks_without_volume
-            else:
-                final_filtered_stocks = filtered_stocks
-        else:
-            final_filtered_stocks = filtered_stocks
-        
+            final_filtered_stocks = stocks_after_series
+
         # Sort the final list
         final_filtered_stocks.sort()
-        
+
         self._log(f"Final filtered stock count: {len(final_filtered_stocks)}")
         self._log(f"Reduction: {len(stocks_after_series) - len(final_filtered_stocks)} stocks filtered out")
-        
+
         return final_filtered_stocks
-    
+
+    def filter_stocks_with_data(self, stock_data_dict: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
+        """
+        Filter stocks based on their actual fetched data (market cap and volume).
+        This is more efficient as it uses data already fetched for analysis.
+
+        Args:
+            stock_data_dict: Dictionary mapping symbols to their OHLCV DataFrames
+
+        Returns:
+            Filtered dictionary with only stocks meeting criteria
+        """
+        if not stock_data_dict:
+            return {}
+
+        filtered_data = {}
+        filtered_count = 0
+        volume_filtered = 0
+
+        self._log(f"Filtering {len(stock_data_dict)} stocks based on fetched data...")
+
+        for symbol, data in stock_data_dict.items():
+            try:
+                if data is None or data.empty:
+                    continue
+
+                # Check trading volume criteria
+                volume_ok = True
+                if 'Volume' in data.columns and 'Close' in data.columns:
+                    # Calculate average daily trading value
+                    data_clean = data.dropna()
+                    if len(data_clean) > 0:
+                        trading_values = data_clean['Close'] * data_clean['Volume']
+                        avg_trading_value = trading_values.mean()
+                        avg_trading_value_l = avg_trading_value / 100_000  # Convert to lakhs
+
+                        if avg_trading_value_l < self.min_daily_value_l:
+                            volume_ok = False
+                            volume_filtered += 1
+
+                # For market cap, we'd need to fetch it separately or get it from ticker info
+                # For now, we'll focus on volume filtering which is more practical with OHLCV data
+
+                if volume_ok:
+                    filtered_data[symbol] = data
+                else:
+                    filtered_count += 1
+
+            except Exception as e:
+                self._log(f"Error filtering {symbol}: {e}")
+                # Include stock if there's an error (conservative approach)
+                filtered_data[symbol] = data
+
+        self._log(f"Filtered out {filtered_count} stocks based on trading volume")
+        self._log(f"Remaining stocks: {len(filtered_data)}")
+
+        return filtered_data
+
     def get_filtered_stocks(self, force_refresh: bool = False) -> List[str]:
         """
         Get cached filtered stocks or compute them if cache is expired.
@@ -281,10 +344,10 @@ class StockFilter:
         
         return filtered_stocks
     
-    def get_filter_summary(self) -> Dict[str, int]:
+    def get_filter_summary(self) -> Dict[str, any]:
         """
         Get a summary of filtering results.
-        
+
         Returns:
             Dictionary with filtering statistics
         """

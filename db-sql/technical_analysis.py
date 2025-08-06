@@ -19,15 +19,17 @@ from data_processor import DataProcessor
 class TechnicalAnalyzer:
     """Handles technical analysis and stock screening."""
     
-    def __init__(self, verbose: bool = True):
+    def __init__(self, verbose: bool = True, use_filtering: bool = True):
         """
         Initialize the technical analyzer.
-        
+
         Args:
             verbose (bool): Whether to print detailed logs
+            use_filtering (bool): Whether to enable smart stock filtering
         """
         self.verbose = verbose
-        self.fetcher = StockDataFetcher(verbose=verbose)
+        self.use_filtering = use_filtering
+        self.fetcher = StockDataFetcher(verbose=verbose, use_filtering=use_filtering)
         self.data_manager = StockDataManager(verbose=verbose)
     
     def _log(self, message: str):

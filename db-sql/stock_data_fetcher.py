@@ -13,7 +13,8 @@ import time
 
 from utils import print_step
 from database_manager import DatabaseManager
-from stock_filter import StockFilter
+from optimized_stock_filter import OptimizedStockFilter, PostFetchFilter
+from stock_filter_cache import CachedStockFilter
 
 
 class StockDataFetcher:
@@ -31,12 +32,16 @@ class StockDataFetcher:
         self.use_filtering = use_filtering
         self.db_manager = DatabaseManager(verbose=verbose)
 
-        # Initialize stock filter if enabled
+        # Initialize cached stock filter if enabled
         if self.use_filtering:
-            self.stock_filter = StockFilter(
+            self.cached_filter = CachedStockFilter(
                 min_market_cap_cr=100.0,  # 100 crores minimum market cap
                 min_daily_value_l=10.0,   # 10 lakhs minimum daily trading value
                 verbose=verbose
+            )
+            self.post_filter = PostFetchFilter(
+                min_market_cap_cr=100.0,  # 100 crores (for future use)
+                min_daily_value_l=10.0    # 10 lakhs minimum daily trading value
             )
     
     def _log(self, message: str):
@@ -503,11 +508,11 @@ class StockDataFetcher:
                 query = f"SELECT DISTINCT symbol FROM tradable_stocks WHERE symbol IN ({','.join(['?' for _ in popular])}) ORDER BY symbol"
                 result = self.db_manager.execute_query(query, popular)
             else:
-                if apply_filters and hasattr(self, 'stock_filter'):
-                    # Use filtered stocks for better performance
-                    self._log("Applying stock filtering for optimized processing...")
-                    filtered_symbols = self.stock_filter.get_filtered_stocks()
-                    self._log(f"Found {len(filtered_symbols)} filtered stocks")
+                if apply_filters and hasattr(self, 'cached_filter'):
+                    # Use cached filtering for best performance
+                    self._log("Applying cached stock filtering...")
+                    filtered_symbols = self.cached_filter.get_filtered_stocks()
+                    self._log(f"Found {len(filtered_symbols)} cached filtered stocks")
                     return filtered_symbols
                 else:
                     # Get all stocks without filtering
@@ -542,12 +547,20 @@ class StockDataFetcher:
         Returns:
             Dictionary with filtering statistics
         """
-        if not self.use_filtering or not hasattr(self, 'stock_filter'):
+        if not self.use_filtering or not hasattr(self, 'cached_filter'):
             return {"filtering_enabled": False}
 
         try:
-            summary = self.stock_filter.get_filter_summary()
-            summary["filtering_enabled"] = True
+            cache_status = self.cached_filter.get_cache_status()
+            summary = {
+                "filtering_enabled": True,
+                "optimization_type": "cached_filtering",
+                "cache_current": cache_status.get("current", False),
+                "cache_date": cache_status.get("date"),
+                "cached_stock_count": cache_status.get("count", 0),
+                "cache_age_days": cache_status.get("age_days", 0),
+                "processing_time_seconds": cache_status.get("processing_time_seconds")
+            }
             return summary
         except Exception as e:
             self._log(f"Error getting filtering summary: {e}")
@@ -561,13 +574,17 @@ class StockDataFetcher:
             enabled (bool): Whether to enable filtering
         """
         self.use_filtering = enabled
-        if enabled and not hasattr(self, 'stock_filter'):
-            self.stock_filter = StockFilter(
+        if enabled and not hasattr(self, 'cached_filter'):
+            self.cached_filter = CachedStockFilter(
                 min_market_cap_cr=100.0,
                 min_daily_value_l=10.0,
                 verbose=self.verbose
             )
-        self._log(f"Stock filtering {'enabled' if enabled else 'disabled'}")
+            self.post_filter = PostFetchFilter(
+                min_market_cap_cr=100.0,
+                min_daily_value_l=10.0
+            )
+        self._log(f"Cached stock filtering {'enabled' if enabled else 'disabled'}")
 
     def get_unfiltered_stocks_from_database(self) -> List[str]:
         """
@@ -577,3 +594,65 @@ class StockDataFetcher:
             List[str]: All stock symbols from database
         """
         return self.get_stocks_from_database(use_popular_only=False, apply_filters=False)
+
+    def apply_post_fetch_filtering(self, stock_data_dict: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
+        """
+        Apply post-fetch filtering to already downloaded stock data.
+        This eliminates low-volume stocks using the data we already have.
+
+        Args:
+            stock_data_dict: Dictionary mapping symbols to their OHLCV DataFrames
+
+        Returns:
+            Filtered dictionary with only stocks meeting criteria
+        """
+        if not self.use_filtering or not hasattr(self, 'post_filter'):
+            return stock_data_dict
+
+        self._log("Applying post-fetch volume filtering...")
+        filtered_data = self.post_filter.filter_by_volume(stock_data_dict)
+
+        filtered_out = len(stock_data_dict) - len(filtered_data)
+        if filtered_out > 0:
+            self._log(f"Post-fetch filter: {filtered_out} low-volume stocks filtered out")
+
+        return filtered_data
+
+    def refresh_filter_cache(self) -> List[str]:
+        """
+        Force refresh the filter cache (expensive operation).
+        Use this at the start of trading day to get fresh master list.
+
+        Returns:
+            List of freshly filtered stock symbols
+        """
+        if not self.use_filtering or not hasattr(self, 'cached_filter'):
+            self._log("Filtering not enabled - cannot refresh cache")
+            return []
+
+        self._log("Force refreshing filter cache (this may take a while)...")
+        return self.cached_filter.refresh_cache()
+
+    def get_filter_cache_status(self) -> Dict:
+        """
+        Get detailed cache status information.
+
+        Returns:
+            Dictionary with cache status details
+        """
+        if not self.use_filtering or not hasattr(self, 'cached_filter'):
+            return {"filtering_enabled": False}
+
+        return self.cached_filter.get_cache_status()
+
+    def clear_filter_cache(self) -> bool:
+        """
+        Clear the filter cache.
+
+        Returns:
+            True if cleared successfully
+        """
+        if not self.use_filtering or not hasattr(self, 'cached_filter'):
+            return False
+
+        return self.cached_filter.clear_cache()

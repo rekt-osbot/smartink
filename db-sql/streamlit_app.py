@@ -182,6 +182,20 @@ def main():
     with st.sidebar:
         st.header("🔧 Dashboard Controls")
 
+        # Show optimization info
+        with st.expander("🚀 Performance Optimizations", expanded=False):
+            st.markdown("**Smart Filtering Benefits:**")
+            st.markdown("• ✅ Excludes BE/BZ categories (~327 stocks)")
+            st.markdown("• ✅ Filters low market cap stocks")
+            st.markdown("• ✅ Removes low-volume stocks")
+            st.markdown("• ✅ **15-20% fewer API calls**")
+            st.markdown("• ✅ **Daily cache for instant access**")
+            st.markdown("")
+            st.markdown("**Recommended Workflow:**")
+            st.markdown("1. 🌅 **Morning**: Refresh cache (once)")
+            st.markdown("2. 📊 **Day**: Use cached data (fast)")
+            st.markdown("3. 🔄 **Analysis**: Fetch 50-200 stocks")
+
         # Price Data Section (Frequent Updates)
         st.subheader("📊 Price Data (Frequent)")
         st.info("Fetch daily prices for analysis.")
@@ -194,6 +208,61 @@ def main():
             help="Popular Stocks: Curated list. All Stocks: Use all symbols currently in the master list."
         )
 
+        # Smart Filtering Options
+        st.markdown("**🎯 Smart Filtering**")
+        use_smart_filtering = st.checkbox(
+            "Enable Smart Filtering",
+            value=True,
+            help="Automatically filter out BE/BZ categories and low market cap/volume stocks for better performance"
+        )
+
+        if use_smart_filtering:
+            with st.expander("⚙️ Smart Filtering & Cache Settings", expanded=False):
+                st.markdown("**Exclusion Criteria:**")
+                st.markdown("• BE (Book Entry) and BZ (Blacklisted) categories")
+                st.markdown("• Stocks below 100cr market cap")
+                st.markdown("• Stocks with <10L daily trading value")
+                st.markdown("• **Efficiency gain: ~15-20% fewer API calls**")
+
+                st.markdown("---")
+                st.markdown("**📅 Daily Master List Cache**")
+
+                # Get cache status
+                if hasattr(st.session_state, 'analyzer') and st.session_state.analyzer:
+                    cache_status = st.session_state.analyzer.fetcher.get_filter_cache_status()
+
+                    if cache_status.get("exists", False):
+                        cache_date = cache_status.get("date", "Unknown")
+                        cache_count = cache_status.get("count", 0)
+                        is_current = cache_status.get("current", False)
+
+                        if is_current:
+                            st.success(f"✅ Current cache: {cache_count} stocks (today: {cache_date})")
+                        else:
+                            st.warning(f"⚠️ Stale cache: {cache_count} stocks (from: {cache_date})")
+                    else:
+                        st.info("ℹ️ No cache found - will create on first use")
+
+                # Cache management options
+                col1, col2 = st.columns(2)
+                with col1:
+                    force_refresh_cache = st.checkbox(
+                        "🔄 Force Refresh Cache",
+                        value=False,
+                        help="Rebuild the daily master list (slower but ensures fresh data)"
+                    )
+                with col2:
+                    if st.button("🗑️ Clear Cache", help="Clear the cached master list"):
+                        if hasattr(st.session_state, 'analyzer') and st.session_state.analyzer:
+                            if st.session_state.analyzer.fetcher.clear_filter_cache():
+                                st.success("Cache cleared successfully!")
+                                st.rerun()
+                            else:
+                                st.error("Failed to clear cache")
+
+                if force_refresh_cache:
+                    st.info("🔄 **Cache will be refreshed** - this adds ~30-60 seconds for comprehensive filtering")
+
         if fetch_mode == "All Stocks in DB":
             max_stocks = st.number_input(
                 "Max Stocks to Fetch (0 = All)",
@@ -201,14 +270,42 @@ def main():
                 max_value=5000,
                 value=50,  # Default to 50 to prevent accidental large fetches
                 step=50,
-                help="Limit number of stocks to fetch price data for (0 = fetch all)."
+                help="Limit number of stocks to fetch price data for (0 = fetch all). Recommended: 50-200 for quick analysis."
             )
+
+            # Add time estimates based on stock count and filtering
+            if use_smart_filtering:
+                estimated_stocks = min(max_stocks if max_stocks > 0 else 1800, 1800)  # ~1800 after filtering
+            else:
+                estimated_stocks = min(max_stocks if max_stocks > 0 else 2100, 2100)  # ~2100 total stocks
+
+            if max_stocks == 0:
+                st.warning(f"⏱️ **Full dataset**: ~{estimated_stocks} stocks, estimated time: 3-5 minutes")
+                st.markdown("💡 **Tip**: Consider using a smaller limit (50-200) for faster analysis")
+            elif max_stocks > 500:
+                st.info(f"⏱️ **Large dataset**: {max_stocks} stocks, estimated time: 2-3 minutes")
+            elif max_stocks > 200:
+                st.info(f"⏱️ **Medium dataset**: {max_stocks} stocks, estimated time: 1-2 minutes")
+            elif max_stocks > 100:
+                st.success(f"⏱️ **Quick analysis**: {max_stocks} stocks, estimated time: 30-90 seconds")
+            else:
+                st.success(f"⏱️ **Fast analysis**: {max_stocks} stocks, estimated time: 15-30 seconds")
         else:
             max_stocks = 50  # Popular stocks are a fixed list
+            st.success("⏱️ **Popular stocks**: ~50 curated stocks, estimated time: 15-30 seconds")
 
         if st.button("🔄 Fetch Latest Price Data", type="primary", use_container_width=True):
             use_popular_only = (fetch_mode == "Popular Stocks Only")
             max_stocks_param = max_stocks if max_stocks > 0 else None
+
+            # Handle cache refresh if requested
+            if use_smart_filtering and 'force_refresh_cache' in locals() and force_refresh_cache:
+                with st.spinner("🔄 Refreshing daily master list cache..."):
+                    try:
+                        refreshed_stocks = st.session_state.analyzer.fetcher.refresh_filter_cache()
+                        st.success(f"✅ Cache refreshed: {len(refreshed_stocks)} stocks in master list")
+                    except Exception as e:
+                        st.warning(f"⚠️ Cache refresh failed: {e}")
 
             # Clear any existing cache first
             st.cache_data.clear()
@@ -222,8 +319,8 @@ def main():
                 if not st.session_state.analyzer.setup_database():
                     st.error("❌ Failed to setup database schema")
                 else:
-                    # Stream the data fetching process
-                    if stream_stock_data_fetch(st.session_state.analyzer, use_popular_only, max_stocks_param):
+                    # Stream the data fetching process with filtering option
+                    if stream_stock_data_fetch(st.session_state.analyzer, use_popular_only, max_stocks_param, use_smart_filtering):
                         # Force refresh of data availability check
                         check_data_availability()
                         st.success("✅ Price data fetched successfully!")

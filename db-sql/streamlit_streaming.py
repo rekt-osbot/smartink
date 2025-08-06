@@ -152,32 +152,61 @@ class StreamingProgressTracker:
             pass
 
 
-def stream_stock_data_fetch(analyzer, use_popular_only=False, max_stocks=None):
+def stream_stock_data_fetch(analyzer, use_popular_only=False, max_stocks=None, use_filtering=True):
     """
     Stream stock data fetching with real-time progress updates.
-    
+
     Args:
         analyzer: TechnicalAnalyzer instance
         use_popular_only (bool): Whether to use only popular stocks
         max_stocks (int): Maximum number of stocks to fetch
-    
+        use_filtering (bool): Whether to apply stock filtering for optimization
+
     Returns:
         bool: True if successful
     """
     try:
         # Get symbols to process
         if use_popular_only:
-            symbols = analyzer.fetcher.get_stocks_from_database(use_popular_only=True)
+            symbols = analyzer.fetcher.get_stocks_from_database(use_popular_only=True, apply_filters=use_filtering)
             if not symbols:
                 symbols = analyzer.fetcher.get_popular_nse_stocks()
         else:
-            symbols = analyzer.fetcher.get_stocks_from_database()
+            symbols = analyzer.fetcher.get_stocks_from_database(apply_filters=use_filtering)
+
+        # Show filtering info if enabled
+        if use_filtering and hasattr(analyzer.fetcher, 'get_filtering_summary'):
+            filter_summary = analyzer.fetcher.get_filtering_summary()
+            if filter_summary.get('filtering_enabled', False):
+                cache_current = filter_summary.get('cache_current', False)
+                cache_date = filter_summary.get('cache_date', 'Unknown')
+                cached_count = filter_summary.get('cached_stock_count', len(symbols))
+
+                if cache_current:
+                    st.info(f"🎯 **Smart Filtering Enabled**: Using cached master list with {cached_count} stocks "
+                           f"(created today: {cache_date})")
+                else:
+                    st.info(f"🎯 **Smart Filtering Enabled**: Processing {len(symbols)} optimized stocks "
+                           f"(cache from: {cache_date})")
         
         if max_stocks and len(symbols) > max_stocks:
             symbols = symbols[:max_stocks]
-        
+
         total_symbols = len(symbols)
-        
+
+        # Show time estimates and user guidance
+        estimated_time_seconds = total_symbols * 0.15  # Rough estimate: 0.15 seconds per stock
+        estimated_minutes = estimated_time_seconds / 60
+
+        if estimated_minutes > 3:
+            st.warning(f"⏱️ **Large dataset**: {total_symbols} stocks, estimated time: {estimated_minutes:.1f} minutes")
+            st.markdown("💡 **Tip**: This is a good time to grab a coffee! ☕ The app will continue in the background.")
+        elif estimated_minutes > 1:
+            st.info(f"⏱️ **Medium dataset**: {total_symbols} stocks, estimated time: {estimated_minutes:.1f} minutes")
+            st.markdown("📊 **Progress will be shown below** - you can watch the real-time updates!")
+        else:
+            st.success(f"⏱️ **Quick fetch**: {total_symbols} stocks, estimated time: {estimated_time_seconds:.0f} seconds")
+
         # Initialize progress tracker
         title = f"Fetching Data for {total_symbols} Stocks"
         tracker = StreamingProgressTracker(total_symbols, title)
