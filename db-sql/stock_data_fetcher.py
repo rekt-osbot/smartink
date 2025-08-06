@@ -13,20 +13,31 @@ import time
 
 from utils import print_step
 from database_manager import DatabaseManager
+from stock_filter import StockFilter
 
 
 class StockDataFetcher:
     """Handles fetching and processing stock data from yfinance."""
     
-    def __init__(self, verbose: bool = True):
+    def __init__(self, verbose: bool = True, use_filtering: bool = True):
         """
         Initialize the stock data fetcher.
-        
+
         Args:
             verbose (bool): Whether to print detailed logs
+            use_filtering (bool): Whether to apply stock filtering for optimization
         """
         self.verbose = verbose
+        self.use_filtering = use_filtering
         self.db_manager = DatabaseManager(verbose=verbose)
+
+        # Initialize stock filter if enabled
+        if self.use_filtering:
+            self.stock_filter = StockFilter(
+                min_market_cap_cr=100.0,  # 100 crores minimum market cap
+                min_daily_value_l=10.0,   # 10 lakhs minimum daily trading value
+                verbose=verbose
+            )
     
     def _log(self, message: str):
         """Log message if verbose mode is enabled."""
@@ -470,16 +481,21 @@ class StockDataFetcher:
         self._log(f"Generated comprehensive stock list with {len(comprehensive_stocks)} symbols")
         return comprehensive_stocks
 
-    def get_stocks_from_database(self, use_popular_only: bool = False) -> List[str]:
+    def get_stocks_from_database(self, use_popular_only: bool = False, apply_filters: bool = None) -> List[str]:
         """
         Get list of stock symbols from the database with cloud-friendly fallbacks.
 
         Args:
             use_popular_only (bool): If True, filter to only popular stocks
+            apply_filters (bool): If True, apply stock filtering. If None, uses instance setting.
 
         Returns:
             List[str]: List of stock symbols
         """
+        # Determine if filtering should be applied
+        if apply_filters is None:
+            apply_filters = self.use_filtering
+
         try:
             if use_popular_only:
                 # Get popular stocks that exist in our database
@@ -487,8 +503,16 @@ class StockDataFetcher:
                 query = f"SELECT DISTINCT symbol FROM tradable_stocks WHERE symbol IN ({','.join(['?' for _ in popular])}) ORDER BY symbol"
                 result = self.db_manager.execute_query(query, popular)
             else:
-                query = "SELECT DISTINCT symbol FROM tradable_stocks ORDER BY symbol"
-                result = self.db_manager.execute_query(query)
+                if apply_filters and hasattr(self, 'stock_filter'):
+                    # Use filtered stocks for better performance
+                    self._log("Applying stock filtering for optimized processing...")
+                    filtered_symbols = self.stock_filter.get_filtered_stocks()
+                    self._log(f"Found {len(filtered_symbols)} filtered stocks")
+                    return filtered_symbols
+                else:
+                    # Get all stocks without filtering
+                    query = "SELECT DISTINCT symbol FROM tradable_stocks ORDER BY symbol"
+                    result = self.db_manager.execute_query(query)
 
             if result and result[1]:
                 symbols = [row[0] for row in result[1]]
@@ -510,3 +534,46 @@ class StockDataFetcher:
                 return self.get_popular_nse_stocks()
             else:
                 return self.get_comprehensive_nse_stocks()
+
+    def get_filtering_summary(self) -> Dict[str, int]:
+        """
+        Get summary of stock filtering performance.
+
+        Returns:
+            Dictionary with filtering statistics
+        """
+        if not self.use_filtering or not hasattr(self, 'stock_filter'):
+            return {"filtering_enabled": False}
+
+        try:
+            summary = self.stock_filter.get_filter_summary()
+            summary["filtering_enabled"] = True
+            return summary
+        except Exception as e:
+            self._log(f"Error getting filtering summary: {e}")
+            return {"filtering_enabled": False, "error": str(e)}
+
+    def toggle_filtering(self, enabled: bool):
+        """
+        Enable or disable stock filtering.
+
+        Args:
+            enabled (bool): Whether to enable filtering
+        """
+        self.use_filtering = enabled
+        if enabled and not hasattr(self, 'stock_filter'):
+            self.stock_filter = StockFilter(
+                min_market_cap_cr=100.0,
+                min_daily_value_l=10.0,
+                verbose=self.verbose
+            )
+        self._log(f"Stock filtering {'enabled' if enabled else 'disabled'}")
+
+    def get_unfiltered_stocks_from_database(self) -> List[str]:
+        """
+        Get all stocks from database without any filtering (for comparison/debugging).
+
+        Returns:
+            List[str]: All stock symbols from database
+        """
+        return self.get_stocks_from_database(use_popular_only=False, apply_filters=False)
