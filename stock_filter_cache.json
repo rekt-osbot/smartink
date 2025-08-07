@@ -1,0 +1,17 @@
+{
+  "date": "2025-08-07",
+  "timestamp": "2025-08-07T12:48:43.661557",
+  "symbols": [],
+  "count": 0,
+  "filter_criteria": {
+    "excluded_series": [
+      "BE",
+      "BZ"
+    ],
+    "min_market_cap_cr": 100.0,
+    "min_daily_value_l": 10.0,
+    "method": "series_filtering_only"
+  },
+  "processing_time_seconds": 0.0003921985626220703,
+  "cache_version": "1.0"
+}

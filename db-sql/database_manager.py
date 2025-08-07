@@ -188,17 +188,19 @@ class DatabaseManager:
             self._log(f"Error populating table: {e}")
             return False
 
-    def create_and_populate_table(self, df: pd.DataFrame) -> bool:
+    def create_and_populate_table(self, df: pd.DataFrame, table_name: Optional[str] = None) -> bool:
         """
         Optimized method to create table and populate it in one operation.
         This avoids the redundant DROP+CREATE operations.
 
         Args:
             df (pd.DataFrame): DataFrame to create table from and populate
+            table_name (Optional[str]): Name of the table to create. Defaults to self.table_name.
 
         Returns:
             bool: True if successful, False otherwise
         """
+        target_table = table_name if table_name is not None else self.table_name
         try:
             # Prepare DataFrame for database insertion
             df_to_insert = df.copy()
@@ -220,7 +222,7 @@ class DatabaseManager:
             with self.get_connection() as conn:
                 # Use pandas to_sql with 'replace' - this handles everything efficiently
                 df_to_insert.to_sql(
-                    self.table_name,
+                    target_table,
                     conn,
                     if_exists='replace',
                     index=False
@@ -228,34 +230,35 @@ class DatabaseManager:
 
                 # Verify insertion
                 cursor = conn.cursor()
-                cursor.execute(f"SELECT COUNT(*) FROM {self.table_name}")
+                cursor.execute(f"SELECT COUNT(*) FROM {target_table}")
                 count = cursor.fetchone()[0]
 
-                self._log(f"Successfully created table and inserted {count} records")
+                self._log(f"Successfully created table '{target_table}' and inserted {count} records")
 
                 # Show sample data
                 if self.verbose:
-                    self._show_sample_data(cursor)
+                    self._show_sample_data(cursor, table_name=target_table)
 
                 conn.commit()
                 return True
 
         except Exception as e:
-            self._log(f"Error creating and populating table: {e}")
+            self._log(f"Error creating and populating table '{target_table}': {e}")
             return False
     
-    def _show_sample_data(self, cursor: sqlite3.Cursor, limit: int = 3):
+    def _show_sample_data(self, cursor: sqlite3.Cursor, limit: int = 3, table_name: Optional[str] = None):
         """Show sample data from the table."""
+        target_table = table_name if table_name is not None else self.table_name
         try:
-            cursor.execute(f"SELECT * FROM {self.table_name} LIMIT {limit}")
+            cursor.execute(f"SELECT * FROM {target_table} LIMIT {limit}")
             sample_data = cursor.fetchall()
             
             if sample_data:
                 # Get column names
-                cursor.execute(f"PRAGMA table_info({self.table_name})")
+                cursor.execute(f"PRAGMA table_info({target_table})")
                 columns = [col[1] for col in cursor.fetchall()]
                 
-                self._log(f"\nSample data from {self.table_name}:")
+                self._log(f"\nSample data from {target_table}:")
                 self._log("-" * 60)
                 
                 for i, row in enumerate(sample_data, 1):

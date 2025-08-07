@@ -83,6 +83,8 @@ def show_cloud_warning():
         """)
         st.session_state.cloud_warning_shown = True
 
+import sqlite3
+
 def check_data_availability():
     """Check if data is available and update session state accordingly."""
     try:
@@ -93,7 +95,7 @@ def check_data_availability():
         else:
             st.session_state.data_fetched = False
             return False
-    except Exception:
+    except (sqlite3.Error, KeyError) as e:
         st.session_state.data_fetched = False
         return False
 
@@ -153,19 +155,11 @@ def get_cached_master_stock_count(_analyzer):
     try:
         symbols = _analyzer.fetcher.get_stocks_from_database()
         return len(symbols) if symbols else 0
-    except Exception:
+    except sqlite3.Error:
         return 0
 
 def main():
     """Main dashboard function."""
-
-    # Page configuration
-    st.set_page_config(
-        page_title="SmartInk - Stock Analysis",
-        page_icon="📈",
-        layout="wide",
-        initial_sidebar_state="expanded"
-    )
 
     # Header
     st.markdown('<h1 class="main-header">📈 SmartInk - Intelligent Stock Analysis</h1>', unsafe_allow_html=True)
@@ -216,6 +210,7 @@ def main():
             help="Automatically filter out BE/BZ categories and low market cap/volume stocks for better performance"
         )
 
+        force_refresh_cache = False
         if use_smart_filtering:
             with st.expander("⚙️ Smart Filtering & Cache Settings", expanded=False):
                 st.markdown("**Exclusion Criteria:**")
@@ -299,12 +294,12 @@ def main():
             max_stocks_param = max_stocks if max_stocks > 0 else None
 
             # Handle cache refresh if requested
-            if use_smart_filtering and 'force_refresh_cache' in locals() and force_refresh_cache:
+            if use_smart_filtering and force_refresh_cache:
                 with st.spinner("🔄 Refreshing daily master list cache..."):
                     try:
                         refreshed_stocks = st.session_state.analyzer.fetcher.refresh_filter_cache()
                         st.success(f"✅ Cache refreshed: {len(refreshed_stocks)} stocks in master list")
-                    except Exception as e:
+                    except (IOError, sqlite3.Error) as e:
                         st.warning(f"⚠️ Cache refresh failed: {e}")
 
             # Clear any existing cache first
@@ -369,17 +364,22 @@ def main():
         time.sleep(30)
         st.rerun()
     
+    # Page navigation
+    PAGES = {
+        "📊 Dashboard Overview": show_dashboard_overview,
+        "🎯 SMA Breakout Opportunities": show_sma_breakout_opportunities,
+        "📈 Stocks Above SMA": show_stocks_above_sma,
+        "🚀 Open=High Patterns": show_breakout_patterns,
+        "📋 Data Explorer": show_data_explorer,
+    }
     # Main content based on selected page
-    if page == "📊 Dashboard Overview":
-        show_dashboard_overview(sma_period)
-    elif page == "🎯 SMA Breakout Opportunities":
-        show_sma_breakout_opportunities(sma_period)
-    elif page == "📈 Stocks Above SMA":
-        show_stocks_above_sma(sma_period)
-    elif page == "🚀 Open=High Patterns":
-        show_breakout_patterns()
-    elif page == "📋 Data Explorer":
-        show_data_explorer()
+    page_function = PAGES.get(page)
+    if page_function:
+        # Pass sma_period to functions that need it
+        if page_function in [show_dashboard_overview, show_sma_breakout_opportunities, show_stocks_above_sma]:
+            page_function(sma_period)
+        else:
+            page_function()
 
 # Removed old fetch function - now using streaming version
 
@@ -398,7 +398,7 @@ def show_dashboard_overview(sma_period):
         if not stats or stats.get('total_stocks_with_data', 0) == 0:
             st.warning("⚠️ No stock data found. Please fetch data first.")
             return
-    except Exception as e:
+    except (sqlite3.Error, KeyError) as e:
         st.error(f"❌ Error loading dashboard data: {str(e)}")
         return
     
@@ -425,7 +425,7 @@ def show_dashboard_overview(sma_period):
         try:
             breakout_opportunities = get_cached_stocks_near_sma_breakout(st.session_state.analyzer, sma_period, 5.0)
             breakout_count = len(breakout_opportunities) if breakout_opportunities is not None else 0
-        except Exception:
+        except (sqlite3.Error, KeyError):
             breakout_count = 0
 
         st.metric(
@@ -517,7 +517,7 @@ def show_top_performers_chart(sma_period):
 
     try:
         breakout_opportunities = get_cached_stocks_near_sma_breakout(st.session_state.analyzer, sma_period, 5.0)
-    except Exception:
+    except (sqlite3.Error, KeyError):
         breakout_opportunities = None
 
     if breakout_opportunities is not None and not breakout_opportunities.empty:

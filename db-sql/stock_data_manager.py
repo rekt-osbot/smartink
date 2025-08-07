@@ -59,7 +59,7 @@ class StockDataManager(DatabaseManager):
                 self._log(f"Created table: {self.price_table}")
                 return True
                 
-        except Exception as e:
+        except sqlite3.Error as e:
             self._log(f"Error creating price table: {e}")
             return False
     
@@ -97,7 +97,7 @@ class StockDataManager(DatabaseManager):
                 self._log(f"Created table: {self.indicators_table}")
                 return True
                 
-        except Exception as e:
+        except sqlite3.Error as e:
             self._log(f"Error creating indicators table: {e}")
             return False
     
@@ -121,154 +121,86 @@ class StockDataManager(DatabaseManager):
         
         return success
     
-    def insert_price_data(self, data: pd.DataFrame) -> bool:
+    def _upsert_data(self, data: pd.DataFrame, table_name: str, all_columns: List[str], create_temp_table_sql: str) -> bool:
         """
-        Insert or update OHLCV data into the price table using proper upsert logic.
+        Generic method to insert or update data using a temporary table for efficiency.
 
         Args:
-            data (pd.DataFrame): DataFrame with OHLCV data
+            data (pd.DataFrame): DataFrame with data to upsert.
+            table_name (str): The name of the target table.
+            all_columns (List[str]): All possible columns for the table.
+            create_temp_table_sql (str): SQL to create the temporary table.
 
         Returns:
-            bool: True if successful
-        """
-        try:
-            # Prepare data for insertion
-            df_to_insert = data.copy()
-
-            # Ensure date is in string format
-            if 'date' in df_to_insert.columns:
-                df_to_insert['date'] = pd.to_datetime(df_to_insert['date']).dt.strftime(DATE_FORMAT)
-
-            # Select only the columns we need
-            required_columns = ['symbol', 'date', 'open', 'high', 'low', 'close', 'volume']
-            df_to_insert = df_to_insert[required_columns]
-
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-
-                # Create temporary table for bulk upsert
-                temp_table = f"{self.price_table}_temp"
-                cursor.execute(f"DROP TABLE IF EXISTS {temp_table}")
-
-                # Create temporary table with same structure
-                cursor.execute(f"""
-                CREATE TEMPORARY TABLE {temp_table} (
-                    symbol TEXT NOT NULL,
-                    date DATE NOT NULL,
-                    open REAL NOT NULL,
-                    high REAL NOT NULL,
-                    low REAL NOT NULL,
-                    close REAL NOT NULL,
-                    volume INTEGER,
-                    PRIMARY KEY (symbol, date)
-                )
-                """)
-
-                # Insert data into temporary table
-                df_to_insert.to_sql(temp_table, conn, if_exists='append', index=False)
-
-                # Perform upsert using INSERT OR REPLACE
-                cursor.execute(f"""
-                INSERT OR REPLACE INTO {self.price_table}
-                (symbol, date, open, high, low, close, volume, created_at)
-                SELECT
-                    symbol, date, open, high, low, close, volume,
-                    COALESCE(
-                        (SELECT created_at FROM {self.price_table} p
-                         WHERE p.symbol = {temp_table}.symbol AND p.date = {temp_table}.date),
-                        CURRENT_TIMESTAMP
-                    ) as created_at
-                FROM {temp_table}
-                """)
-
-                rows_affected = cursor.rowcount
-
-                # Clean up temporary table
-                cursor.execute(f"DROP TABLE {temp_table}")
-
-                conn.commit()
-                self._log(f"Upserted {rows_affected} price records")
-                return True
-
-        except Exception as e:
-            self._log(f"Error upserting price data: {e}")
-            return False
-    
-    def insert_indicators_data(self, data: pd.DataFrame) -> bool:
-        """
-        Insert or update technical indicators data using proper upsert logic.
-
-        Args:
-            data (pd.DataFrame): DataFrame with indicators data
-
-        Returns:
-            bool: True if successful
+            bool: True if successful, False otherwise.
         """
         try:
             df_to_insert = data.copy()
 
-            # Ensure date is in string format
-            if 'date' in df_to_insert.columns:
-                df_to_insert['date'] = pd.to_datetime(df_to_insert['date']).dt.strftime(DATE_FORMAT)
+            if 'date' in df_to_insert.columns and pd.api.types.is_datetime64_any_dtype(df_to_insert['date']):
+                df_to_insert['date'] = df_to_insert['date'].dt.strftime(DATE_FORMAT)
 
-            # Select only the columns we need
-            available_columns = ['symbol', 'date']
-            indicator_columns = ['sma_20', 'sma_50', 'rsi_14']
-
-            for col in indicator_columns:
-                if col in df_to_insert.columns:
-                    available_columns.append(col)
-
+            # Filter to only include columns that exist in the table
+            available_columns = [col for col in all_columns if col in df_to_insert.columns]
             df_to_insert = df_to_insert[available_columns]
 
             with self.get_connection() as conn:
                 cursor = conn.cursor()
+                temp_table = f"{table_name}_temp"
 
-                # Create temporary table for bulk upsert
-                temp_table = f"{self.indicators_table}_temp"
                 cursor.execute(f"DROP TABLE IF EXISTS {temp_table}")
+                cursor.execute(create_temp_table_sql)
 
-                # Create temporary table with same structure
-                cursor.execute(f"""
-                CREATE TEMPORARY TABLE {temp_table} (
-                    symbol TEXT NOT NULL,
-                    date DATE NOT NULL,
-                    sma_20 REAL,
-                    sma_50 REAL,
-                    rsi_14 REAL,
-                    PRIMARY KEY (symbol, date)
-                )
-                """)
-
-                # Insert data into temporary table
                 df_to_insert.to_sql(temp_table, conn, if_exists='append', index=False)
 
-                # Perform upsert using INSERT OR REPLACE
-                cursor.execute(f"""
-                INSERT OR REPLACE INTO {self.indicators_table}
-                (symbol, date, sma_20, sma_50, rsi_14, created_at)
+                # Construct columns for INSERT OR REPLACE
+                cols_to_insert = ", ".join(available_columns)
+
+                # Coalesce for created_at to preserve original timestamp on replace
+                upsert_sql = f"""
+                INSERT OR REPLACE INTO {table_name}
+                ({cols_to_insert}, created_at)
                 SELECT
-                    symbol, date, sma_20, sma_50, rsi_14,
+                    {cols_to_insert},
                     COALESCE(
-                        (SELECT created_at FROM {self.indicators_table} i
-                         WHERE i.symbol = {temp_table}.symbol AND i.date = {temp_table}.date),
+                        (SELECT created_at FROM {table_name} p
+                         WHERE p.symbol = t.symbol AND p.date = t.date),
                         CURRENT_TIMESTAMP
                     ) as created_at
-                FROM {temp_table}
-                """)
+                FROM {temp_table} t
+                """
 
+                cursor.execute(upsert_sql)
                 rows_affected = cursor.rowcount
-
-                # Clean up temporary table
                 cursor.execute(f"DROP TABLE {temp_table}")
-
                 conn.commit()
-                self._log(f"Upserted {rows_affected} indicator records")
+
+                self._log(f"Upserted {rows_affected} records into {table_name}")
                 return True
 
-        except Exception as e:
-            self._log(f"Error upserting indicators data: {e}")
+        except (sqlite3.Error, pd.errors.EmptyDataError, KeyError) as e:
+            self._log(f"Error upserting data into {table_name}: {e}")
             return False
+
+    def insert_price_data(self, data: pd.DataFrame) -> bool:
+        """Insert or update OHLCV data into the price table."""
+        price_columns = ['symbol', 'date', 'open', 'high', 'low', 'close', 'volume']
+        temp_table_sql = f"""
+        CREATE TEMPORARY TABLE {self.price_table}_temp (
+            symbol TEXT NOT NULL, date DATE NOT NULL, open REAL, high REAL,
+            low REAL, close REAL, volume INTEGER, PRIMARY KEY (symbol, date)
+        )"""
+        return self._upsert_data(data, self.price_table, price_columns, temp_table_sql)
+
+    def insert_indicators_data(self, data: pd.DataFrame) -> bool:
+        """Insert or update technical indicators data."""
+        indicator_columns = ['symbol', 'date', 'sma_20', 'sma_50', 'rsi_14']
+        temp_table_sql = f"""
+        CREATE TEMPORARY TABLE {self.indicators_table}_temp (
+            symbol TEXT NOT NULL, date DATE NOT NULL, sma_20 REAL, sma_50 REAL,
+            rsi_14 REAL, PRIMARY KEY (symbol, date)
+        )"""
+        return self._upsert_data(data, self.indicators_table, indicator_columns, temp_table_sql)
     
     def get_latest_prices(self, symbol: str = None, limit: int = 100) -> Optional[pd.DataFrame]:
         """
@@ -302,7 +234,7 @@ class StockDataManager(DatabaseManager):
                 df = pd.read_sql_query(query, conn, params=params)
                 return df if not df.empty else None
                 
-        except Exception as e:
+        except (sqlite3.Error, pd.errors.EmptyDataError) as e:
             self._log(f"Error getting latest prices: {e}")
             return None
     
@@ -365,7 +297,7 @@ class StockDataManager(DatabaseManager):
                 df = pd.read_sql_query(query, conn, params=(max_distance,))
                 return df if not df.empty else None
 
-        except Exception as e:
+        except (sqlite3.Error, pd.errors.EmptyDataError) as e:
             self._log(f"Error getting stocks near SMA breakout: {e}")
             return None
 
@@ -413,7 +345,7 @@ class StockDataManager(DatabaseManager):
                 df = pd.read_sql_query(query, conn, params=params)
                 return df if not df.empty else None
 
-        except Exception as e:
+        except (sqlite3.Error, pd.errors.EmptyDataError) as e:
             self._log(f"Error getting stocks above SMA: {e}")
             return None
     

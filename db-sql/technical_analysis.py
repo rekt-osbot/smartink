@@ -76,9 +76,7 @@ class TechnicalAnalyzer:
 
         self._log("Rebuilding the 'tradable_stocks' table with fresh data...")
         # Use the analyzer's own data_manager to perform the update
-        from database_manager import DatabaseManager
-        db_manager = DatabaseManager(verbose=self.verbose)
-        success = db_manager.create_and_populate_table(cleaned_df)
+        success = self.data_manager.create_and_populate_table(cleaned_df)
 
         if success:
             self._log(f"✓ Master stock list updated successfully with {len(cleaned_df)} stocks.")
@@ -96,6 +94,7 @@ class TechnicalAnalyzer:
             period (str): Period for data fetching
             use_popular_only (bool): If True, use only popular stocks that work well with yfinance
             max_stocks (int, optional): Maximum number of stocks to fetch. If None, fetches all
+            progress_callback (function, optional): Callback for progress updates
 
         Returns:
             bool: True if successful
@@ -128,7 +127,8 @@ class TechnicalAnalyzer:
 
             # Process stocks in memory-efficient batches
             batch_size = 100  # Process 100 stocks at a time
-            total_records = 0
+            all_price_data = []
+            all_indicators_data = []
             total_processed = 0
 
             for batch_start in range(0, len(symbols), batch_size):
@@ -142,36 +142,48 @@ class TechnicalAnalyzer:
 
                 if not stock_data:
                     self._log(f"No data fetched for batch {batch_start//batch_size + 1}")
+                    if progress_callback:
+                        progress = (batch_end / len(symbols))
+                        progress_callback(progress, f"Batch {batch_start//batch_size + 1} failed, skipping...")
                     continue
 
-                # Store price data and indicators for this batch
-                batch_records = 0
+                # Collect price and indicators data for this batch
                 for symbol, data in stock_data.items():
                     if data is not None and not data.empty:
-                        # Store price data
-                        if self.data_manager.insert_price_data(data):
-                            batch_records += len(data)
+                        all_price_data.append(data)
+                        all_indicators_data.append(data[['symbol', 'date', 'sma_20']].copy())
 
-                        # Store indicators data (SMA is already calculated)
-                        indicators_data = data[['symbol', 'date', 'sma_20']].copy()
-                        self.data_manager.insert_indicators_data(indicators_data)
-
-                total_records += batch_records
                 total_processed += len(stock_data)
+                self._log(f"✓ Batch {batch_start//batch_size + 1} completed for {len(stock_data)} stocks")
 
-                self._log(f"✓ Batch {batch_start//batch_size + 1} completed: {batch_records} records for {len(stock_data)} stocks")
+                # Update progress
+                if progress_callback:
+                    progress = (batch_end / len(symbols))
+                    progress_callback(progress, f"Processed {batch_end}/{len(symbols)} symbols...")
 
                 # Clear batch data from memory
                 del stock_data
 
-                # Small pause between batches to allow garbage collection
-                import time
-                time.sleep(0.5)
+            if not all_price_data:
+                self._log("No data collected to store.")
+                return True
 
-            self._log(f"✓ Successfully stored {total_records} price records for {total_processed} stocks")
-            return True
-            
-        except Exception as e:
+            # Bulk insert all collected data
+            self._log("Starting bulk insert of all collected data...")
+            price_df = pd.concat(all_price_data)
+            indicators_df = pd.concat(all_indicators_data)
+
+            price_success = self.data_manager.insert_price_data(price_df)
+            indicators_success = self.data_manager.insert_indicators_data(indicators_df)
+
+            if price_success and indicators_success:
+                self._log(f"✓ Successfully stored {len(price_df)} price records and {len(indicators_df)} indicator records for {total_processed} stocks")
+                return True
+            else:
+                self._log("✗ Bulk insert failed.")
+                return False
+
+        except (sqlite3.Error, IOError, KeyError) as e:
             self._log(f"Error fetching and storing data: {e}")
             return False
     
@@ -210,6 +222,27 @@ class TechnicalAnalyzer:
         """
         return self.data_manager.get_open_high_patterns()
     
+    def format_stocks_for_display(self, stocks: pd.DataFrame, headers: List[str]) -> List[List[str]]:
+        """Format a DataFrame of stocks for display in a table."""
+        display_data = []
+        if stocks is None or stocks.empty:
+            return display_data
+
+        for _, row in stocks.iterrows():
+            row_data = []
+            for header in headers:
+                col_name = header.lower().replace(' ', '_')
+                if col_name in row:
+                    value = row[col_name]
+                    if isinstance(value, float):
+                        row_data.append(f"{value:.2f}")
+                    else:
+                        row_data.append(str(value))
+                else:
+                    row_data.append("")
+            display_data.append(row_data)
+        return display_data
+
     def display_stocks_near_sma_breakout(self, sma_period: int = 20, max_distance: float = 5.0):
         """
         Display stocks near SMA breakout in a formatted table (actionable opportunities).
@@ -227,22 +260,18 @@ class TechnicalAnalyzer:
             print("Try running 'Fetch Latest Data' first.")
             return
 
-        # Format the data for display
-        display_data = []
-        for _, row in stocks.iterrows():
-            # Color coding for breakout status
-            status_symbol = "🟢" if "Above" in row['breakout_status'] else "🔴" if "Below" in row['breakout_status'] else "⚪"
+        stocks_to_display = stocks.copy()
+        stocks_to_display['breakout_status'] = stocks_to_display.apply(
+            lambda row: f"{'🟢' if 'Above' in row['breakout_status'] else '🔴' if 'Below' in row['breakout_status'] else '⚪'} {row['breakout_status']}",
+            axis=1
+        )
+        stocks_to_display['percentage_from_sma'] = stocks_to_display['percentage_from_sma'].map('{:+.2f}%'.format)
 
-            display_data.append([
-                row['symbol'],
-                f"{row['close']:.2f}",
-                f"{row[f'sma_{sma_period}']:.2f}",
-                f"{row['percentage_from_sma']:+.2f}%",
-                f"{status_symbol} {row['breakout_status']}",
-                row['date']
-            ])
 
-        headers = ['Symbol', 'Current Price', f'{sma_period}-Day SMA', '% From SMA', 'Breakout Status', 'Date']
+        headers = ['Symbol', 'Close', f'sma_{sma_period}', 'percentage_from_sma', 'breakout_status', 'Date']
+
+        display_data = self.format_stocks_for_display(stocks_to_display, headers)
+
         print(tabulate(display_data, headers=headers, tablefmt="grid"))
         print(f"\nTotal actionable stocks near {sma_period}-day SMA: {len(display_data)}")
 
@@ -273,18 +302,13 @@ class TechnicalAnalyzer:
             print("Try running 'Fetch Latest Data' first.")
             return
 
-        # Format the data for display
-        display_data = []
-        for _, row in stocks.iterrows():
-            display_data.append([
-                row['symbol'],
-                f"{row['close']:.2f}",
-                f"{row[f'sma_{sma_period}']:.2f}",
-                f"{row['percentage_above_sma']:.2f}%",
-                row['date']
-            ])
+        stocks_to_display = stocks.copy()
+        stocks_to_display['percentage_above_sma'] = stocks_to_display['percentage_above_sma'].map('{:.2f}%'.format)
 
-        headers = ['Symbol', 'Current Price', f'{sma_period}-Day SMA', '% Above SMA', 'Date']
+        headers = ['Symbol', 'Close', f'sma_{sma_period}', 'percentage_above_sma', 'Date']
+
+        display_data = self.format_stocks_for_display(stocks_to_display, headers)
+
         print(tabulate(display_data, headers=headers, tablefmt="grid"))
         print(f"\nTotal stocks above {sma_period}-day SMA: {len(display_data)}")
     
@@ -299,28 +323,21 @@ class TechnicalAnalyzer:
             print("Try running 'Fetch Latest Data' first.")
             return
         
-        # Format the data for display
-        display_data = []
-        for _, row in patterns.iterrows():
-            display_data.append([
-                row['symbol'],
-                row['yesterday_date'],
-                f"{row['yesterday_open']:.2f}",
-                f"{row['yesterday_high']:.2f}",
-                row['today_date'],
-                f"{row['today_close']:.2f}",
-                f"{row['breakout_percentage']:.2f}%"
-            ])
-        
+        patterns_to_display = patterns.copy()
+        patterns_to_display['breakout_percentage'] = patterns_to_display['breakout_percentage'].map('{:.2f}%'.format)
+
         headers = [
             'Symbol', 
-            'Yesterday Date', 
-            'Yesterday Open', 
-            'Yesterday High',
-            'Today Date',
-            'Today Close',
-            'Breakout %'
+            'yesterday_date',
+            'yesterday_open',
+            'yesterday_high',
+            'today_date',
+            'today_close',
+            'breakout_percentage'
         ]
+
+        display_data = self.format_stocks_for_display(patterns_to_display, headers)
+
         print(tabulate(display_data, headers=headers, tablefmt="grid"))
         print(f"\nTotal stocks with open=high patterns: {len(display_data)}")
     
@@ -351,7 +368,7 @@ class TechnicalAnalyzer:
             
             return stats
             
-        except Exception as e:
+        except (sqlite3.Error, KeyError) as e:
             self._log(f"Error getting summary statistics: {e}")
             return {}
     
@@ -425,6 +442,6 @@ class TechnicalAnalyzer:
             
             return True
             
-        except Exception as e:
+        except IOError as e:
             self._log(f"Error exporting results: {e}")
             return False
