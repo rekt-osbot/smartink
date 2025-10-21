@@ -165,11 +165,11 @@ SmartInk is a professional-grade stock analysis platform that focuses on **actio
 git clone <repository-url>
 cd smartink
 
-# Install dependencies (using uv for faster installs)
-uv pip install -r requirements.txt
+# Ensure the expected Python version is available (installs 3.11 if needed)
+uv python install 3.11
 
-# Or with regular pip
-pip install -r requirements.txt
+# Install project dependencies and create the virtual environment
+uv sync
 ```
 
 ### **Two Official Entry Points:**
@@ -177,60 +177,71 @@ pip install -r requirements.txt
 #### **1. Interactive Web UI (Primary)**
 ```bash
 # Run the Streamlit web application
-uv run streamlit run db-sql/streamlit_app.py
+uv run streamlit run smartink/streamlit_app.py
 ```
 
 #### **2. CLI Automation (Administrative)**
 ```bash
 # System check
-python db-sql/main.py --system-check
+uv run python -m smartink.main --system-check
 
 # Refresh master stock list from NSE
-python db-sql/main.py --refresh-database
+uv run python -m smartink.main --refresh-database
 
 # Fetch prices for popular stocks
-python db-sql/main.py --fetch-prices --popular-only
+uv run python -m smartink.main --fetch-prices --popular-only
 
 # Fetch prices for up to 100 stocks
-python db-sql/main.py --fetch-prices --limit 100
+uv run python -m smartink.main --fetch-prices --limit 100
 
 # Clean up old data
-python db-sql/main.py --cleanup-data
+uv run python -m smartink.main --cleanup-data
 
 # Verbose output
-python db-sql/main.py --system-check --verbose
+uv run python -m smartink.main --system-check --verbose
 ```
 
 ### **Testing**
 ```bash
-# Run tests
-uv run python db-sql/test_optimizations.py
-uv run python db-sql/test_actionable_opportunities.py
+# Run the automated test suite
+uv run pytest
 ```
 
 ## 🧪 **Testing**
 
-The project includes comprehensive test suites:
+The project now ships with a lightweight [pytest](https://docs.pytest.org/) suite:
 
-- **Performance Tests**: `test_optimizations.py` - Validates all optimizations
-- **Trading Logic Tests**: `test_actionable_opportunities.py` - Tests breakout detection
-- **Streaming Tests**: `test_streaming.py` - Validates real-time progress updates
+- **Import smoke tests** ensure every package module loads without side effects.
+- **Data processing tests** validate column normalization and datetime handling.
+- **Database helper tests** confirm SQLite schema generation.
+- **Cache tests** exercise the persistent filter cache lifecycle.
 
 ## 📁 **Project Structure**
 
 ```
 smartink/
-├── db-sql/                          # Main application directory
-│   ├── streamlit_app.py            # Main Streamlit application
-│   ├── technical_analysis.py       # Core analysis engine
-│   ├── stock_data_fetcher.py       # Data fetching with bulk optimization
-│   ├── stock_data_manager.py       # Database operations with upsert logic
-│   ├── streamlit_streaming.py      # Real-time progress tracking
-│   ├── main.py                     # CLI interface
-│   ├── requirements.txt            # Python dependencies
-│   └── test_*.py                   # Test suites
-├── README.md                       # This file
-└── OPTIMIZATION_REPORT.md          # Detailed performance improvements
+├── smartink/                       # Core application package
+│   ├── __init__.py
+│   ├── config.py                   # Shared configuration constants
+│   ├── data_processor.py           # Data loading and cleaning logic
+│   ├── database_manager.py         # SQLite helpers and schema management
+│   ├── main.py                     # CLI entry point
+│   ├── optimized_stock_filter.py   # Advanced filtering utilities
+│   ├── stock_data_fetcher.py       # yfinance data ingestion
+│   ├── stock_data_manager.py       # Extended storage helpers
+│   ├── stock_filter.py             # Baseline filters
+│   ├── stock_filter_cache.py       # Persistent cache helpers
+│   ├── streamlit_app.py            # Streamlit dashboard
+│   ├── streamlit_streaming.py      # Streaming utilities
+│   └── technical_analysis.py       # Technical analysis orchestration
+├── tests/                          # Pytest-based automated checks
+│   ├── test_data_processor.py
+│   ├── test_database_manager.py
+│   ├── test_imports.py
+│   └── test_stock_filter_cache.py
+├── README.md                       # Project documentation
+├── pyproject.toml                  # Project metadata and uv dependencies
+└── uv.lock                         # Locked dependency versions
 ```
 
 ## 🎨 **Screenshots**

@@ -9,11 +9,11 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
 from tabulate import tabulate
 
-from stock_data_fetcher import StockDataFetcher
-from stock_data_manager import StockDataManager
-from utils import print_step, print_section_header
-from config import CONSOLE_WIDTH, PRIMARY_CSV_URL, BHAV_CSV_URL
-from data_processor import DataProcessor
+from smartink.stock_data_fetcher import StockDataFetcher
+from smartink.stock_data_manager import StockDataManager
+from smartink.utils import print_step, print_section_header
+from smartink.config import CONSOLE_WIDTH, PRIMARY_CSV_URL, BHAV_CSV_URL
+from smartink.data_processor import DataProcessor
 
 
 class TechnicalAnalyzer:
@@ -76,7 +76,7 @@ class TechnicalAnalyzer:
 
         self._log("Rebuilding the 'tradable_stocks' table with fresh data...")
         # Use the analyzer's own data_manager to perform the update
-        from database_manager import DatabaseManager
+        from smartink.database_manager import DatabaseManager
         db_manager = DatabaseManager(verbose=self.verbose)
         success = db_manager.create_and_populate_table(cleaned_df)
 

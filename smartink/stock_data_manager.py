@@ -9,9 +9,9 @@ from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 from contextlib import contextmanager
 
-from database_manager import DatabaseManager
-from utils import print_step
-from config import DB_FILE, DATE_FORMAT
+from smartink.database_manager import DatabaseManager
+from smartink.utils import print_step
+from smartink.config import DB_FILE, DATE_FORMAT
 
 
 class StockDataManager(DatabaseManager):

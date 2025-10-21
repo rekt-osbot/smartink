@@ -4,11 +4,11 @@ CLI automation script for the Stock Technical Analysis application.
 Provides non-interactive, argument-driven commands for automation and administration.
 
 Usage:
-    python main.py --system-check                    # Check dependencies and system status
-    python main.py --refresh-database               # Fetch master stock list from NSE
-    python main.py --fetch-prices --popular-only    # Fetch prices for popular stocks
-    python main.py --fetch-prices --limit 100       # Fetch prices for up to 100 stocks
-    python main.py --cleanup-data                   # Clean up old database records
+    uv run python -m smartink.main --system-check                  # Check dependencies and system status
+    uv run python -m smartink.main --refresh-database               # Fetch master stock list from NSE
+    uv run python -m smartink.main --fetch-prices --popular-only    # Fetch prices for popular stocks
+    uv run python -m smartink.main --fetch-prices --limit 100       # Fetch prices for up to 100 stocks
+    uv run python -m smartink.main --cleanup-data                   # Clean up old database records
 """
 
 import sys
@@ -16,8 +16,8 @@ import argparse
 import importlib.util
 from pathlib import Path
 
-from utils import print_section_header, print_step
-from config import CONSOLE_WIDTH
+from smartink.utils import print_section_header, print_step
+from smartink.config import CONSOLE_WIDTH
 
 
 class StockAnalysisAutomation:
@@ -55,7 +55,7 @@ class StockAnalysisAutomation:
         
         if missing_modules:
             print(f"Missing dependencies: {', '.join(missing_modules)}")
-            print("Install with: uv pip install " + ' '.join(missing_modules))
+            print("Install the project dependencies with: uv sync")
             return False
         
         if self.verbose:
@@ -77,7 +77,7 @@ class StockAnalysisAutomation:
         
         # Check database connectivity
         try:
-            from database_manager import DatabaseManager
+            from smartink.database_manager import DatabaseManager
             db_manager = DatabaseManager(verbose=self.verbose)
             
             if self.verbose:
@@ -125,7 +125,7 @@ class StockAnalysisAutomation:
         print_section_header("REFRESH MASTER STOCK LIST", CONSOLE_WIDTH)
         
         try:
-            from technical_analysis import TechnicalAnalyzer
+            from smartink.technical_analysis import TechnicalAnalyzer
             
             analyzer = TechnicalAnalyzer(verbose=self.verbose)
             
@@ -164,7 +164,7 @@ class StockAnalysisAutomation:
         print_section_header("FETCH STOCK PRICES", CONSOLE_WIDTH)
         
         try:
-            from technical_analysis import TechnicalAnalyzer
+            from smartink.technical_analysis import TechnicalAnalyzer
             
             analyzer = TechnicalAnalyzer(verbose=self.verbose)
             
@@ -203,7 +203,7 @@ class StockAnalysisAutomation:
         print_section_header("CLEANUP OLD DATA", CONSOLE_WIDTH)
         
         try:
-            from stock_data_manager import StockDataManager
+            from smartink.stock_data_manager import StockDataManager
             
             data_manager = StockDataManager(verbose=self.verbose)
             
