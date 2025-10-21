@@ -15,7 +15,7 @@ import os
 from smartink.technical_analysis import TechnicalAnalyzer
 from smartink.stock_data_fetcher import StockDataFetcher
 from smartink.stock_data_manager import StockDataManager
-from streamlit_streaming import stream_stock_data_fetch
+from smartink.streamlit_streaming import stream_stock_data_fetch
 
 # Page configuration
 st.set_page_config(

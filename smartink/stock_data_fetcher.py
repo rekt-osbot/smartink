@@ -159,29 +159,22 @@ class StockDataFetcher:
             ticker = yf.Ticker(yf_symbol)
             data = ticker.history(period=period)
 
+            # Fallback: try without NSE suffix if no data returned
+            if data.empty and yf_symbol.endswith('.NS'):
+                self._log(f"No data found for {yf_symbol}, trying without exchange suffix")
+                alt_symbol = symbol
+                ticker_alt = yf.Ticker(alt_symbol)
+                data = ticker_alt.history(period=period, timeout=10, raise_errors=False)
+                if not data.empty:
+                    yf_symbol = alt_symbol
+
             if data.empty:
-                self._log(f"No data found for {yf_symbol}")
+                self._log(f"No data available for {symbol} even after fallback")
                 return None
 
             # Validate data quality
             if len(data) < 5:  # Need at least 5 days for meaningful analysis
                 self._log(f"Insufficient data for {symbol}: only {len(data)} records")
-                return None
-
-            if data.empty:
-                # Try without .NS suffix for some stocks
-                if yf_symbol.endswith('.NS'):
-                    alt_symbol = symbol  # Try without .NS
-                    ticker_alt = yf.Ticker(alt_symbol)
-                    data = ticker_alt.history(period=period, timeout=10, raise_errors=False)
-                    if not data.empty:
-                        yf_symbol = alt_symbol
-
-                if data.empty:
-                    return None
-
-            # Validate data quality
-            if len(data) < 5:  # Need at least 5 days for meaningful analysis
                 return None
 
             # Reset index to make Date a column

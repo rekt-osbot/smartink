@@ -64,7 +64,12 @@ class StockFilterCache:
                 "processing_time_seconds": processing_time,
                 "cache_version": "1.0"
             }
-            
+
+            # Ensure target directory exists before writing the cache file
+            cache_dir = self.cache_file.parent
+            if cache_dir and not cache_dir.exists():
+                cache_dir.mkdir(parents=True, exist_ok=True)
+
             with open(self.cache_file, 'w') as f:
                 json.dump(cache_data, f, indent=2)
             

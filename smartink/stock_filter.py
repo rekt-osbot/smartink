@@ -361,13 +361,17 @@ class StockFilter:
         # Get final filtered stocks
         final_filtered = self.get_filtered_stocks()
         
+        efficiency_gain = 0.0
+        if total_stocks:
+            efficiency_gain = round((total_stocks - len(final_filtered)) / total_stocks * 100, 1)
+
         return {
             'total_stocks': total_stocks,
             'after_series_filter': len(series_filtered),
             'final_filtered': len(final_filtered),
-            'be_bz_excluded': total_stocks - len(series_filtered),
-            'total_excluded': total_stocks - len(final_filtered),
-            'efficiency_gain_percent': round((total_stocks - len(final_filtered)) / total_stocks * 100, 1)
+            'be_bz_excluded': max(total_stocks - len(series_filtered), 0),
+            'total_excluded': max(total_stocks - len(final_filtered), 0),
+            'efficiency_gain_percent': efficiency_gain
         }
 
 

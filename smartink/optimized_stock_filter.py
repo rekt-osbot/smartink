@@ -98,24 +98,26 @@ class OptimizedStockFilter:
             try:
                 if data is None or data.empty:
                     continue
-                
+
                 # Check trading volume criteria using fetched data
                 volume_ok = True
-                if 'Volume' in data.columns and 'Close' in data.columns:
-                    # Calculate average daily trading value from the fetched data
-                    data_clean = data.dropna()
+                close_col = next((col for col in data.columns if col.lower() == 'close'), None)
+                volume_col = next((col for col in data.columns if col.lower() == 'volume'), None)
+
+                if close_col and volume_col:
+                    data_clean = data.dropna(subset=[close_col, volume_col])
                     if len(data_clean) > 0:
-                        trading_values = data_clean['Close'] * data_clean['Volume']
+                        trading_values = data_clean[close_col] * data_clean[volume_col]
                         avg_trading_value = trading_values.mean()
                         avg_trading_value_l = avg_trading_value / 100_000  # Convert to lakhs
-                        
+
                         if avg_trading_value_l < self.min_daily_value_l:
                             volume_ok = False
                             volume_filtered_count += 1
-                
+
                 if volume_ok:
                     filtered_data[symbol] = data
-                    
+
             except Exception as e:
                 self._log(f"Error filtering {symbol}: {e}")
                 # Include stock if there's an error (conservative approach)
@@ -156,11 +158,15 @@ class OptimizedStockFilter:
         # Get stocks by series (fast operation)
         series_filtered = self.get_series_filtered_stocks()
         
+        efficiency_gain = 0.0
+        if total_stocks:
+            efficiency_gain = round((total_stocks - len(series_filtered)) / total_stocks * 100, 1)
+
         return {
             'total_stocks': total_stocks,
             'series_filtered': len(series_filtered),
-            'be_bz_excluded': total_stocks - len(series_filtered),
-            'efficiency_gain_percent': round((total_stocks - len(series_filtered)) / total_stocks * 100, 1),
+            'be_bz_excluded': max(total_stocks - len(series_filtered), 0),
+            'efficiency_gain_percent': efficiency_gain,
             'filtering_strategy': 'optimized_post_fetch'
         }
 
@@ -197,21 +203,24 @@ class PostFetchFilter:
         for symbol, df in stock_data.items():
             if df is None or df.empty:
                 continue
-                
+
             try:
                 # Calculate average trading value
-                if 'Close' in df.columns and 'Volume' in df.columns:
-                    df_clean = df.dropna()
+                close_col = next((col for col in df.columns if col.lower() == 'close'), None)
+                volume_col = next((col for col in df.columns if col.lower() == 'volume'), None)
+
+                if close_col and volume_col:
+                    df_clean = df.dropna(subset=[close_col, volume_col])
                     if len(df_clean) > 0:
-                        trading_values = df_clean['Close'] * df_clean['Volume']
+                        trading_values = df_clean[close_col] * df_clean[volume_col]
                         avg_value_l = trading_values.mean() / 100_000
-                        
+
                         if avg_value_l >= self.min_daily_value_l:
                             filtered[symbol] = df
                 else:
                     # Include if we can't calculate (conservative)
                     filtered[symbol] = df
-                    
+
             except Exception:
                 # Include if error (conservative)
                 filtered[symbol] = df
@@ -233,15 +242,18 @@ class PostFetchFilter:
         for symbol, df in stock_data.items():
             if df is None or df.empty:
                 continue
-                
+
             try:
-                if 'Close' in df.columns and 'Volume' in df.columns:
-                    df_clean = df.dropna()
+                close_col = next((col for col in df.columns if col.lower() == 'close'), None)
+                volume_col = next((col for col in df.columns if col.lower() == 'volume'), None)
+
+                if close_col and volume_col:
+                    df_clean = df.dropna(subset=[close_col, volume_col])
                     if len(df_clean) > 0:
-                        trading_values = df_clean['Close'] * df_clean['Volume']
+                        trading_values = df_clean[close_col] * df_clean[volume_col]
                         avg_value_l = trading_values.mean() / 100_000
                         stats[symbol] = avg_value_l
-                        
+
             except Exception:
                 continue
         
