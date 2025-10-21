@@ -1,5 +1,9 @@
 codebase.md
-db-sql/__pycache__/
-db-sql/tradable_stocks.db
 .venv/
-db-sql/tradable_stocks.db-journal
+/.pytest_cache/
+__pycache__/
+*.py[cod]
+*.sqlite3
+*.db
+stock_filter_cache.json
+.env

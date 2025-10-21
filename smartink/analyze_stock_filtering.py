@@ -49,7 +49,7 @@ def check_current_processing():
     
     # Check if there are any existing filters in the codebase
     try:
-        from stock_data_fetcher import StockDataFetcher
+        from smartink.stock_data_fetcher import StockDataFetcher
         fetcher = StockDataFetcher()
         
         # Get stocks from database

@@ -9,8 +9,8 @@ import io
 from pathlib import Path
 from typing import Optional, List, Tuple
 
-from utils import normalize_column_name, ensure_file_exists, print_step
-from config import (
+from smartink.utils import normalize_column_name, ensure_file_exists, print_step
+from smartink.config import (
     PRIMARY_CSV_URL, BHAV_CSV_URL,
     REQUEST_TIMEOUT, REQUEST_HEADERS, DATE_FORMAT
 )

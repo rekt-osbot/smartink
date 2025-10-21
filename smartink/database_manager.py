@@ -9,8 +9,8 @@ from pathlib import Path
 from typing import Optional, List, Tuple, Dict, Any
 from contextlib import contextmanager
 
-from utils import print_step
-from config import DB_FILE, TABLE_NAME, PANDAS_TO_SQLITE_TYPES, DATE_FORMAT
+from smartink.utils import print_step
+from smartink.config import DB_FILE, TABLE_NAME, PANDAS_TO_SQLITE_TYPES, DATE_FORMAT
 
 
 class DatabaseManager:

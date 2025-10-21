@@ -1,0 +1,39 @@
+[project]
+name = "smartink"
+version = "0.1.0"
+description = "Intelligent stock analysis platform for actionable trading insights"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "altair==5.5.0",
+    "numpy==2.3.2",
+    "pandas==2.3.1",
+    "plotly==6.2.0",
+    "psutil==6.1.0",
+    "requests==2.32.4",
+    "streamlit==1.47.1",
+    "tabulate==0.9.0",
+    "yfinance==0.2.65",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==8.3.3",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = false
+
+[tool.hatch.build.targets.wheel]
+packages = ["smartink"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "smartink",
+    "README.md",
+    "pyproject.toml",
+]

@@ -6,8 +6,8 @@ This version focuses on fast series filtering and post-fetch data filtering.
 import sqlite3
 import pandas as pd
 from typing import List, Dict, Optional, Tuple
-from database_manager import DatabaseManager
-from config import DB_FILE
+from smartink.database_manager import DatabaseManager
+from smartink.config import DB_FILE
 
 
 class OptimizedStockFilter:

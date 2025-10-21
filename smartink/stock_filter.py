@@ -9,8 +9,8 @@ import yfinance as yf
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime, timedelta
 import time
-from database_manager import DatabaseManager
-from config import DB_FILE
+from smartink.database_manager import DatabaseManager
+from smartink.config import DB_FILE
 
 
 class StockFilter:

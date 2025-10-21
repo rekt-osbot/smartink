@@ -226,7 +226,7 @@ class CachedStockFilter:
         self.cache = StockFilterCache(cache_file, verbose)
         
         # Import here to avoid circular imports
-        from optimized_stock_filter import OptimizedStockFilter
+        from smartink.optimized_stock_filter import OptimizedStockFilter
         self.fast_filter = OptimizedStockFilter(min_daily_value_l, verbose)
     
     def _log(self, message: str):
