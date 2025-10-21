@@ -5,7 +5,7 @@
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Status](https://img.shields.io/badge/status-live-brightgreen.svg)
 
-**🚀 Live Demo**: [https://smartink.streamlit.app/](https://smartink.streamlit.app/)
+**🚀 Live Demo**: [https://smartink-1.streamlit.app/](https://smartink-1.streamlit.app/)
 
 SmartInk is a professional-grade stock analysis platform that focuses on **actionable trading opportunities** rather than showing you stocks that are already too late to enter. Built for day traders and swing traders who need to identify fresh breakouts and setups near key technical levels.
 
