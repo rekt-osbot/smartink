@@ -10,6 +10,17 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import time
 import os
+import sys
+from pathlib import Path
+
+# Allow running the app via ``streamlit run smartink/streamlit_app.py`` without
+# installing the package. Streamlit executes the script from the ``smartink``
+# package directory, so we need to add the repository root to ``sys.path``
+# before importing other internal modules.
+if __package__ in {None, ""}:
+    repo_root = Path(__file__).resolve().parent.parent
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
 
 # Import our modules
 from smartink.technical_analysis import TechnicalAnalyzer
@@ -18,6 +29,9 @@ from smartink.stock_data_manager import StockDataManager
 from smartink.streamlit_streaming import stream_stock_data_fetch
 
 # Page configuration
+# NOTE: Streamlit only allows set_page_config to be called once per app.
+# Any future configuration changes should be added here rather than in
+# downstream functions like ``main`` to avoid runtime crashes.
 st.set_page_config(
     page_title="Stock Technical Analysis Dashboard",
     page_icon="📈",
@@ -158,14 +172,6 @@ def get_cached_master_stock_count(_analyzer):
 
 def main():
     """Main dashboard function."""
-
-    # Page configuration
-    st.set_page_config(
-        page_title="SmartInk - Stock Analysis",
-        page_icon="📈",
-        layout="wide",
-        initial_sidebar_state="expanded"
-    )
 
     # Header
     st.markdown('<h1 class="main-header">📈 SmartInk - Intelligent Stock Analysis</h1>', unsafe_allow_html=True)
