@@ -239,9 +239,29 @@ class TechnicalAnalyzer:
             fmt = f"{{:{'+' if signed else ''}.{decimals}f}}"
             return fmt.format(value) + suffix
 
+        def format_ratio(value):
+            if pd.isna(value):
+                return "—"
+            return f"{value:.2f}x"
+
         display_data = []
         for _, row in stocks.iterrows():
             status_symbol = "🟢" if "Above" in row['breakout_status'] else "🔴" if "Below" in row['breakout_status'] else "⚪"
+            signal_symbol_map = {
+                'Fresh Breakout (Confirmed)': '🚀',
+                'Retest & Hold Above': '🛡️',
+                'Momentum Continuation': '📈',
+                'Breakout Watch (Compression)': '⏳',
+                'Breakout Watch (Slightly Below)': '👀',
+                'Failed Breakout - Caution': '⚠️',
+                'Fresh Breakdown (Confirmed)': '⛔',
+                'Bearish Drift / Breakdown Risk': '📉',
+                'Range-Bound / No Signal': '➖'
+            }
+            signal_label = row.get('breakout_signal', 'Range-Bound / No Signal')
+            signal_display = f"{signal_symbol_map.get(signal_label, '➖')} {signal_label}"
+
+            confidence_display = format_number(row.get('breakout_confidence'), decimals=0)
 
             display_data.append([
                 row['symbol'],
@@ -254,6 +274,10 @@ class TechnicalAnalyzer:
                 format_number(row.get('rsi_14'), decimals=1),
                 row.get('rsi_signal', 'Neutral'),
                 f"{status_symbol} {row['breakout_status']}",
+                signal_display,
+                confidence_display,
+                format_ratio(row.get('volume_surge_ratio')),
+                format_number(row.get('momentum_5'), signed=True, suffix="%"),
                 row['date']
             ])
 
@@ -268,6 +292,10 @@ class TechnicalAnalyzer:
             'RSI(14)',
             'RSI Signal',
             'Breakout Status',
+            'Breakout Signal',
+            'Confidence',
+            'Vol Surge (x)',
+            '5D Momentum',
             'Date'
         ]
         print(tabulate(display_data, headers=headers, tablefmt="grid"))
@@ -278,6 +306,18 @@ class TechnicalAnalyzer:
         print(f"\nBreakdown:")
         for status, count in status_counts.items():
             print(f"• {status}: {count} stocks")
+
+        if 'breakout_signal' in stocks.columns:
+            signal_counts = stocks['breakout_signal'].value_counts()
+            print("\nSignals:")
+            for signal_name, count in signal_counts.items():
+                print(f"• {signal_name}: {count} stocks")
+
+        if 'breakout_confidence' in stocks.columns:
+            avg_conf = stocks['breakout_confidence'].mean()
+            high_conf = (stocks['breakout_confidence'] >= 70).sum()
+            print(f"\nAverage breakout confidence: {avg_conf:.1f} / 100")
+            print(f"High-conviction setups (≥70): {high_conf}")
 
     def display_stocks_above_sma(self, sma_period: int = 20, max_distance: float = None):
         """
