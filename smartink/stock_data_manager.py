@@ -420,7 +420,7 @@ class StockDataManager(DatabaseManager):
     def get_open_high_patterns(self) -> Optional[pd.DataFrame]:
         """
         Get stocks with open=high patterns.
-        
+
         Returns:
             Optional[pd.DataFrame]: Stocks with patterns or None
         """
@@ -474,6 +474,118 @@ class StockDataManager(DatabaseManager):
         except Exception as e:
             self._log(f"Error getting open=high patterns: {e}")
             return None
+
+    def count_total_stocks_with_data(self) -> int:
+        """Count distinct symbols that have recent price data stored."""
+        try:
+            query = f"""
+            WITH latest_prices AS (
+                SELECT symbol, MAX(date) AS latest_date
+                FROM {self.price_table}
+                GROUP BY symbol
+            )
+            SELECT COUNT(*) as symbol_count
+            FROM latest_prices
+            """
+
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(query)
+                result = cursor.fetchone()
+                return int(result[0]) if result and result[0] is not None else 0
+
+        except Exception as e:
+            self._log(f"Error counting stocks with data: {e}")
+            return 0
+
+    def count_stocks_above_sma(self, sma_period: int = 20, max_distance: float = None) -> int:
+        """Count stocks trading above the specified SMA using the latest data."""
+        try:
+            sma_column = f"sma_{sma_period}"
+
+            distance_filter = ""
+            params = []
+            if max_distance is not None:
+                distance_filter = f"AND ((p.close - i.{sma_column}) / i.{sma_column} * 100) <= ?"
+                params.append(max_distance)
+
+            query = f"""
+            WITH latest_dates AS (
+                SELECT symbol, MAX(date) AS latest_date
+                FROM {self.price_table}
+                GROUP BY symbol
+            )
+            SELECT COUNT(DISTINCT p.symbol) as stock_count
+            FROM {self.price_table} p
+            JOIN latest_dates ld ON p.symbol = ld.symbol AND p.date = ld.latest_date
+            JOIN {self.indicators_table} i ON p.symbol = i.symbol AND p.date = i.date
+            WHERE i.{sma_column} IS NOT NULL
+                AND p.close > i.{sma_column}
+                {distance_filter}
+            """
+
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(query, tuple(params))
+                result = cursor.fetchone()
+                return int(result[0]) if result and result[0] is not None else 0
+
+        except Exception as e:
+            self._log(f"Error counting stocks above SMA: {e}")
+            return 0
+
+    def count_open_high_patterns(self) -> int:
+        """Count stocks exhibiting the open=high breakout pattern."""
+        try:
+            query = f"""
+            WITH latest_dates AS (
+                SELECT symbol, MAX(date) as latest_date
+                FROM {self.price_table}
+                GROUP BY symbol
+            ),
+            yesterday_data AS (
+                SELECT
+                    p.symbol,
+                    p.date as yesterday_date,
+                    p.open as yesterday_open,
+                    p.high as yesterday_high
+                FROM {self.price_table} p
+                JOIN latest_dates ld ON p.symbol = ld.symbol
+                WHERE p.date = date(ld.latest_date, '-1 day')
+                    AND ABS(p.open - p.high) < (p.high * 0.001)
+            ),
+            today_data AS (
+                SELECT
+                    p.symbol,
+                    p.date as today_date,
+                    p.open as today_open,
+                    p.high as today_high,
+                    p.close as today_close
+                FROM {self.price_table} p
+                JOIN latest_dates ld ON p.symbol = ld.symbol AND p.date = ld.latest_date
+            ),
+            breakout_patterns AS (
+                SELECT
+                    y.symbol,
+                    y.yesterday_high,
+                    t.today_close
+                FROM yesterday_data y
+                JOIN today_data t ON y.symbol = t.symbol
+                WHERE t.today_close > y.yesterday_high
+            )
+            SELECT COUNT(DISTINCT symbol) as pattern_count
+            FROM breakout_patterns
+            """
+
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(query)
+                result = cursor.fetchone()
+                return int(result[0]) if result and result[0] is not None else 0
+
+        except Exception as e:
+            self._log(f"Error counting open=high patterns: {e}")
+            return 0
     
     def cleanup_old_data(self, days_to_keep: int = 90) -> bool:
         """
