@@ -1,6 +1,7 @@
 """Tests for lightweight count helpers in StockDataManager."""
 
 import pandas as pd
+import pytest
 
 from smartink.stock_data_manager import StockDataManager
 
@@ -52,10 +53,10 @@ def _create_manager_with_sample_data(tmp_path):
     )
     indicator_data = pd.DataFrame(
         [
-            {"symbol": "AAA", "date": "2024-01-01", "sma_20": 97.0},
-            {"symbol": "AAA", "date": "2024-01-02", "sma_20": 100.0},
-            {"symbol": "BBB", "date": "2024-01-01", "sma_20": 205.0},
-            {"symbol": "BBB", "date": "2024-01-02", "sma_20": 206.0},
+            {"symbol": "AAA", "date": "2024-01-01", "sma_20": 97.0, "sma_50": 96.0, "rsi_14": 55.0},
+            {"symbol": "AAA", "date": "2024-01-02", "sma_20": 100.0, "sma_50": 99.0, "rsi_14": 65.0},
+            {"symbol": "BBB", "date": "2024-01-01", "sma_20": 205.0, "sma_50": 208.0, "rsi_14": 48.0},
+            {"symbol": "BBB", "date": "2024-01-02", "sma_20": 206.0, "sma_50": 210.0, "rsi_14": 35.0},
         ]
     )
 
@@ -82,3 +83,20 @@ def test_count_open_high_patterns_detects_breakouts(tmp_path):
     manager = _create_manager_with_sample_data(tmp_path)
 
     assert manager.count_open_high_patterns() == 1
+
+
+def test_market_health_snapshot_includes_trend_and_rsi_counts(tmp_path):
+    manager = _create_manager_with_sample_data(tmp_path)
+
+    snapshot = manager.get_market_health_snapshot()
+
+    assert snapshot['total_stocks'] == 2
+    assert snapshot['above_sma_20'] == 1
+    assert snapshot['above_sma_50'] == 1
+    assert snapshot['bullish_trend'] == 1
+    assert snapshot['bearish_trend'] == 1
+    assert snapshot['neutral_trend'] == 0
+    assert snapshot['rsi_overbought'] == 1
+    assert snapshot['rsi_oversold'] == 1
+    assert snapshot['avg_rsi'] == pytest.approx(50.0, rel=1e-5)
+    assert snapshot['avg_trend_strength'] == pytest.approx(-0.45, abs=0.02)

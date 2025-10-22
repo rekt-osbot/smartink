@@ -153,7 +153,12 @@ class TechnicalAnalyzer:
                             batch_records += len(data)
 
                         # Store indicators data (SMA is already calculated)
-                        indicators_data = data[['symbol', 'date', 'sma_20']].copy()
+                        indicator_columns = ['symbol', 'date']
+                        for column in ['sma_20', 'sma_50', 'rsi_14']:
+                            if column in data.columns:
+                                indicator_columns.append(column)
+
+                        indicators_data = data[indicator_columns].copy()
                         self.data_manager.insert_indicators_data(indicators_data)
 
                 total_records += batch_records
@@ -228,21 +233,43 @@ class TechnicalAnalyzer:
             return
 
         # Format the data for display
+        def format_number(value, decimals=2, signed=False, suffix=""):
+            if pd.isna(value):
+                return "—"
+            fmt = f"{{:{'+' if signed else ''}.{decimals}f}}"
+            return fmt.format(value) + suffix
+
         display_data = []
         for _, row in stocks.iterrows():
-            # Color coding for breakout status
             status_symbol = "🟢" if "Above" in row['breakout_status'] else "🔴" if "Below" in row['breakout_status'] else "⚪"
 
             display_data.append([
                 row['symbol'],
-                f"{row['close']:.2f}",
-                f"{row[f'sma_{sma_period}']:.2f}",
-                f"{row['percentage_from_sma']:+.2f}%",
+                format_number(row['close']),
+                format_number(row.get('sma_20'), suffix=""),
+                format_number(row.get('sma_50'), suffix=""),
+                format_number(row.get('percentage_from_sma'), signed=True, suffix="%"),
+                row.get('trend_bias', 'Neutral Bias'),
+                format_number(row.get('trend_strength'), signed=True, suffix="%"),
+                format_number(row.get('rsi_14'), decimals=1),
+                row.get('rsi_signal', 'Neutral'),
                 f"{status_symbol} {row['breakout_status']}",
                 row['date']
             ])
 
-        headers = ['Symbol', 'Current Price', f'{sma_period}-Day SMA', '% From SMA', 'Breakout Status', 'Date']
+        headers = [
+            'Symbol',
+            'Close',
+            '20-Day SMA',
+            '50-Day SMA',
+            f'% vs {sma_period}-SMA',
+            'Trend Bias',
+            'Trend Δ (20-50)',
+            'RSI(14)',
+            'RSI Signal',
+            'Breakout Status',
+            'Date'
+        ]
         print(tabulate(display_data, headers=headers, tablefmt="grid"))
         print(f"\nTotal actionable stocks near {sma_period}-day SMA: {len(display_data)}")
 
@@ -273,18 +300,39 @@ class TechnicalAnalyzer:
             print("Try running 'Fetch Latest Data' first.")
             return
 
-        # Format the data for display
+        def format_number(value, decimals=2, signed=False, suffix=""):
+            if pd.isna(value):
+                return "—"
+            fmt = f"{{:{'+' if signed else ''}.{decimals}f}}"
+            return fmt.format(value) + suffix
+
         display_data = []
         for _, row in stocks.iterrows():
             display_data.append([
                 row['symbol'],
-                f"{row['close']:.2f}",
-                f"{row[f'sma_{sma_period}']:.2f}",
-                f"{row['percentage_above_sma']:.2f}%",
+                format_number(row['close']),
+                format_number(row.get('sma_20'), suffix=""),
+                format_number(row.get('sma_50'), suffix=""),
+                format_number(row.get('percentage_above_sma'), signed=True, suffix="%"),
+                row.get('trend_bias', 'Neutral Bias'),
+                format_number(row.get('trend_strength'), signed=True, suffix="%"),
+                format_number(row.get('rsi_14'), decimals=1),
+                row.get('rsi_signal', 'Neutral'),
                 row['date']
             ])
 
-        headers = ['Symbol', 'Current Price', f'{sma_period}-Day SMA', '% Above SMA', 'Date']
+        headers = [
+            'Symbol',
+            'Close',
+            '20-Day SMA',
+            '50-Day SMA',
+            f'% vs {sma_period}-SMA',
+            'Trend Bias',
+            'Trend Δ (20-50)',
+            'RSI(14)',
+            'RSI Signal',
+            'Date'
+        ]
         print(tabulate(display_data, headers=headers, tablefmt="grid"))
         print(f"\nTotal stocks above {sma_period}-day SMA: {len(display_data)}")
     
@@ -300,6 +348,12 @@ class TechnicalAnalyzer:
             return
         
         # Format the data for display
+        def format_number(value, decimals=2, signed=False, suffix=""):
+            if pd.isna(value):
+                return "—"
+            fmt = f"{{:{'+' if signed else ''}.{decimals}f}}"
+            return fmt.format(value) + suffix
+
         display_data = []
         for _, row in patterns.iterrows():
             display_data.append([
@@ -309,17 +363,25 @@ class TechnicalAnalyzer:
                 f"{row['yesterday_high']:.2f}",
                 row['today_date'],
                 f"{row['today_close']:.2f}",
-                f"{row['breakout_percentage']:.2f}%"
+                format_number(row.get('breakout_percentage'), signed=True, suffix="%"),
+                row.get('trend_bias', 'Neutral Bias'),
+                format_number(row.get('trend_strength'), signed=True, suffix="%"),
+                format_number(row.get('rsi_14'), decimals=1),
+                row.get('rsi_signal', 'Neutral')
             ])
-        
+
         headers = [
-            'Symbol', 
-            'Yesterday Date', 
-            'Yesterday Open', 
+            'Symbol',
+            'Yesterday Date',
+            'Yesterday Open',
             'Yesterday High',
             'Today Date',
             'Today Close',
-            'Breakout %'
+            'Breakout %',
+            'Trend Bias',
+            'Trend Δ (20-50)',
+            'RSI(14)',
+            'RSI Signal'
         ]
         print(tabulate(display_data, headers=headers, tablefmt="grid"))
         print(f"\nTotal stocks with open=high patterns: {len(display_data)}")
@@ -343,6 +405,19 @@ class TechnicalAnalyzer:
             # Count total stocks with recent price data
             stats['total_stocks_with_data'] = self.data_manager.count_total_stocks_with_data()
 
+            # Enrich with broader market diagnostics
+            market_snapshot = self.data_manager.get_market_health_snapshot()
+            if market_snapshot:
+                stats['market_snapshot'] = market_snapshot
+                stats['stocks_above_50_sma'] = market_snapshot.get('above_sma_50', 0)
+                stats['bullish_trend'] = market_snapshot.get('bullish_trend', 0)
+                stats['bearish_trend'] = market_snapshot.get('bearish_trend', 0)
+                stats['neutral_trend'] = market_snapshot.get('neutral_trend', 0)
+                stats['rsi_overbought'] = market_snapshot.get('rsi_overbought', 0)
+                stats['rsi_oversold'] = market_snapshot.get('rsi_oversold', 0)
+                stats['avg_rsi'] = market_snapshot.get('avg_rsi')
+                stats['avg_trend_strength'] = market_snapshot.get('avg_trend_strength')
+
             return stats
 
         except Exception as e:
@@ -352,7 +427,7 @@ class TechnicalAnalyzer:
     def display_summary(self):
         """Display summary statistics."""
         print_section_header("TECHNICAL ANALYSIS SUMMARY", CONSOLE_WIDTH)
-        
+
         stats = self.get_summary_statistics()
         
         if not stats:
@@ -362,20 +437,81 @@ class TechnicalAnalyzer:
         summary_data = [
             ['Total Stocks with Data', stats.get('total_stocks_with_data', 0)],
             ['Stocks Above 20-Day SMA', stats.get('stocks_above_20_sma', 0)],
+            ['Stocks Above 50-Day SMA', stats.get('stocks_above_50_sma', 0)],
+            ['Bullish Trend Bias (20>50)', stats.get('bullish_trend', 0)],
+            ['Bearish Trend Bias (20<50)', stats.get('bearish_trend', 0)],
+            ['RSI Overbought (>=60)', stats.get('rsi_overbought', 0)],
+            ['RSI Oversold (<=40)', stats.get('rsi_oversold', 0)],
             ['Open=High Breakout Patterns', stats.get('open_high_patterns', 0)]
         ]
-        
+
         print(tabulate(summary_data, headers=['Metric', 'Count'], tablefmt="grid"))
-        
-        # Calculate percentages if we have data
+
         total = stats.get('total_stocks_with_data', 0)
         if total > 0:
-            sma_percentage = (stats.get('stocks_above_20_sma', 0) / total) * 100
-            pattern_percentage = (stats.get('open_high_patterns', 0) / total) * 100
-            
-            print(f"\nPercentages:")
-            print(f"• {sma_percentage:.1f}% of stocks are above 20-day SMA")
-            print(f"• {pattern_percentage:.1f}% of stocks show open=high patterns")
+            print("\nPercentages:")
+            print(f"• {stats.get('stocks_above_20_sma', 0) / total * 100:.1f}% of stocks are above the 20-day SMA")
+            if 'stocks_above_50_sma' in stats:
+                print(f"• {stats.get('stocks_above_50_sma', 0) / total * 100:.1f}% of stocks are above the 50-day SMA")
+            if 'bullish_trend' in stats and 'bearish_trend' in stats:
+                bullish_ratio = stats.get('bullish_trend', 0) / total * 100
+                bearish_ratio = stats.get('bearish_trend', 0) / total * 100
+                print(f"• Trend bias: {bullish_ratio:.1f}% bullish vs {bearish_ratio:.1f}% bearish")
+            print(f"• {stats.get('open_high_patterns', 0) / total * 100:.1f}% of stocks show open=high breakouts")
+
+        avg_rsi = stats.get('avg_rsi')
+        if avg_rsi is not None:
+            print(f"Average RSI(14): {avg_rsi:.1f}")
+
+        avg_trend_strength = stats.get('avg_trend_strength')
+        if avg_trend_strength is not None:
+            print(f"Average 20-50 SMA spread: {avg_trend_strength:+.2f}%")
+
+        if total > 0 and 'bullish_trend' in stats and 'bearish_trend' in stats:
+            breadth_score = (stats.get('bullish_trend', 0) - stats.get('bearish_trend', 0)) / total * 100
+            print(f"Trend breadth score: {breadth_score:+.1f}")
+
+    def display_market_health(self, rsi_overbought: float = 60.0, rsi_oversold: float = 40.0):
+        """Present a consolidated market health snapshot."""
+        print_section_header("MARKET HEALTH SNAPSHOT", CONSOLE_WIDTH)
+
+        snapshot = self.data_manager.get_market_health_snapshot(rsi_overbought, rsi_oversold)
+
+        if not snapshot:
+            print("No market health data available. Try fetching data first.")
+            return
+
+        total = snapshot.get('total_stocks', 0)
+
+        def with_percentage(count: int) -> str:
+            if total <= 0:
+                return str(count)
+            return f"{count} ({count / total * 100:.1f}%)"
+
+        rows = [
+            ['Total Stocks', total],
+            ['Above 20-Day SMA', with_percentage(snapshot.get('above_sma_20', 0))],
+            ['Above 50-Day SMA', with_percentage(snapshot.get('above_sma_50', 0))],
+            ['Bullish Trend Bias (20>50)', with_percentage(snapshot.get('bullish_trend', 0))],
+            ['Bearish Trend Bias (20<50)', with_percentage(snapshot.get('bearish_trend', 0))],
+            ['Neutral Trend Bias', with_percentage(snapshot.get('neutral_trend', 0))],
+            ['RSI Overbought (>=60)', with_percentage(snapshot.get('rsi_overbought', 0))],
+            ['RSI Oversold (<=40)', with_percentage(snapshot.get('rsi_oversold', 0))],
+        ]
+
+        print(tabulate(rows, headers=['Metric', 'Value'], tablefmt="grid"))
+
+        avg_rsi = snapshot.get('avg_rsi')
+        if avg_rsi is not None:
+            print(f"Average RSI(14): {avg_rsi:.1f}")
+
+        avg_trend_strength = snapshot.get('avg_trend_strength')
+        if avg_trend_strength is not None:
+            print(f"Average 20-50 SMA spread: {avg_trend_strength:+.2f}%")
+
+        if total > 0:
+            breadth_score = (snapshot.get('bullish_trend', 0) - snapshot.get('bearish_trend', 0)) / total * 100
+            print(f"Trend breadth score: {breadth_score:+.1f}")
     
     def cleanup_old_data(self, days_to_keep: int = 90) -> bool:
         """

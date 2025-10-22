@@ -330,23 +330,44 @@ class StockDataManager(DatabaseManager):
                 p.close,
                 p.volume,
                 i.{sma_column},
-                ((p.close - i.{sma_column}) / i.{sma_column} * 100) as percentage_from_sma,
+                i.sma_20,
+                i.sma_50,
+                i.rsi_14,
+                CASE
+                    WHEN i.{sma_column} IS NOT NULL AND i.{sma_column} != 0
+                        THEN ((p.close - i.{sma_column}) / i.{sma_column} * 100)
+                END AS percentage_from_sma,
                 CASE
                     WHEN p.close > i.{sma_column} THEN 'Above'
                     WHEN p.close < i.{sma_column} THEN 'Below'
                     ELSE 'At'
                 END as position_vs_sma,
-                -- Check if breaking above SMA today
                 CASE
                     WHEN p.close > i.{sma_column} AND p.open <= i.{sma_column} THEN 'Fresh Breakout Above'
                     WHEN p.close < i.{sma_column} AND p.open >= i.{sma_column} THEN 'Fresh Breakdown Below'
                     WHEN p.close > i.{sma_column} THEN 'Holding Above'
                     WHEN p.close < i.{sma_column} THEN 'Holding Below'
                     ELSE 'At SMA'
-                END as breakout_status
+                END as breakout_status,
+                CASE
+                    WHEN i.sma_20 IS NOT NULL AND i.sma_50 IS NOT NULL AND i.sma_50 != 0
+                        THEN ROUND(((i.sma_20 - i.sma_50) / i.sma_50) * 100, 2)
+                END AS trend_strength,
+                CASE
+                    WHEN i.sma_20 IS NOT NULL AND i.sma_50 IS NOT NULL AND i.sma_20 > i.sma_50 THEN 'Bullish Bias'
+                    WHEN i.sma_20 IS NOT NULL AND i.sma_50 IS NOT NULL AND i.sma_20 < i.sma_50 THEN 'Bearish Bias'
+                    ELSE 'Neutral Bias'
+                END AS trend_bias,
+                CASE
+                    WHEN i.rsi_14 >= 60 THEN 'Overbought'
+                    WHEN i.rsi_14 <= 40 THEN 'Oversold'
+                    WHEN i.rsi_14 IS NULL THEN 'No Signal'
+                    ELSE 'Neutral'
+                END AS rsi_signal
             FROM {self.price_table} p
             JOIN {self.indicators_table} i ON p.symbol = i.symbol AND p.date = i.date
             WHERE i.{sma_column} IS NOT NULL
+                AND i.{sma_column} != 0
                 AND ABS((p.close - i.{sma_column}) / i.{sma_column} * 100) <= ?
                 AND p.date = (
                     SELECT MAX(date) FROM {self.price_table} p2
@@ -354,11 +375,11 @@ class StockDataManager(DatabaseManager):
                 )
             ORDER BY
                 CASE
-                    WHEN p.close > i.{sma_column} AND p.open <= i.{sma_column} THEN 1  -- Fresh breakouts first
-                    WHEN p.close < i.{sma_column} AND p.open >= i.{sma_column} THEN 2  -- Fresh breakdowns second
+                    WHEN p.close > i.{sma_column} AND p.open <= i.{sma_column} THEN 1
+                    WHEN p.close < i.{sma_column} AND p.open >= i.{sma_column} THEN 2
                     ELSE 3
                 END,
-                ABS((p.close - i.{sma_column}) / i.{sma_column} * 100) ASC  -- Closest to SMA first
+                ABS((p.close - i.{sma_column}) / i.{sma_column} * 100) ASC
             """
 
             with self.get_connection() as conn:
@@ -396,10 +417,32 @@ class StockDataManager(DatabaseManager):
                 p.date,
                 p.close,
                 i.{sma_column},
-                ((p.close - i.{sma_column}) / i.{sma_column} * 100) as percentage_above_sma
+                i.sma_20,
+                i.sma_50,
+                i.rsi_14,
+                CASE
+                    WHEN i.{sma_column} IS NOT NULL AND i.{sma_column} != 0
+                        THEN ((p.close - i.{sma_column}) / i.{sma_column} * 100)
+                END as percentage_above_sma,
+                CASE
+                    WHEN i.sma_20 IS NOT NULL AND i.sma_50 IS NOT NULL AND i.sma_20 > i.sma_50 THEN 'Bullish Bias'
+                    WHEN i.sma_20 IS NOT NULL AND i.sma_50 IS NOT NULL AND i.sma_20 < i.sma_50 THEN 'Bearish Bias'
+                    ELSE 'Neutral Bias'
+                END AS trend_bias,
+                CASE
+                    WHEN i.sma_20 IS NOT NULL AND i.sma_50 IS NOT NULL AND i.sma_50 != 0
+                        THEN ROUND(((i.sma_20 - i.sma_50) / i.sma_50) * 100, 2)
+                END AS trend_strength,
+                CASE
+                    WHEN i.rsi_14 >= 60 THEN 'Overbought'
+                    WHEN i.rsi_14 <= 40 THEN 'Oversold'
+                    WHEN i.rsi_14 IS NULL THEN 'No Signal'
+                    ELSE 'Neutral'
+                END AS rsi_signal
             FROM {self.price_table} p
             JOIN {self.indicators_table} i ON p.symbol = i.symbol AND p.date = i.date
             WHERE i.{sma_column} IS NOT NULL
+                AND i.{sma_column} != 0
                 AND p.close > i.{sma_column}
                 {distance_filter}
                 AND p.date = (
@@ -453,16 +496,35 @@ class StockDataManager(DatabaseManager):
                 FROM {self.price_table} p
                 JOIN latest_dates ld ON p.symbol = ld.symbol AND p.date = ld.latest_date
             )
-            SELECT 
+            SELECT
                 y.symbol,
                 y.yesterday_date,
                 y.yesterday_open,
                 y.yesterday_high,
                 t.today_date,
                 t.today_close,
-                ((t.today_close - y.yesterday_high) / y.yesterday_high * 100) as breakout_percentage
+                ((t.today_close - y.yesterday_high) / y.yesterday_high * 100) as breakout_percentage,
+                i.sma_20,
+                i.sma_50,
+                i.rsi_14,
+                CASE
+                    WHEN i.sma_20 IS NOT NULL AND i.sma_50 IS NOT NULL AND i.sma_20 > i.sma_50 THEN 'Bullish Bias'
+                    WHEN i.sma_20 IS NOT NULL AND i.sma_50 IS NOT NULL AND i.sma_20 < i.sma_50 THEN 'Bearish Bias'
+                    ELSE 'Neutral Bias'
+                END AS trend_bias,
+                CASE
+                    WHEN i.sma_20 IS NOT NULL AND i.sma_50 IS NOT NULL AND i.sma_50 != 0
+                        THEN ROUND(((i.sma_20 - i.sma_50) / i.sma_50) * 100, 2)
+                END AS trend_strength,
+                CASE
+                    WHEN i.rsi_14 >= 60 THEN 'Overbought'
+                    WHEN i.rsi_14 <= 40 THEN 'Oversold'
+                    WHEN i.rsi_14 IS NULL THEN 'No Signal'
+                    ELSE 'Neutral'
+                END AS rsi_signal
             FROM yesterday_data y
             JOIN today_data t ON y.symbol = t.symbol
+            LEFT JOIN {self.indicators_table} i ON t.symbol = i.symbol AND t.today_date = i.date
             WHERE t.today_close > y.yesterday_high
             ORDER BY breakout_percentage DESC
             """
@@ -474,6 +536,84 @@ class StockDataManager(DatabaseManager):
         except Exception as e:
             self._log(f"Error getting open=high patterns: {e}")
             return None
+
+    def get_market_health_snapshot(self,
+                                   rsi_overbought: float = 60.0,
+                                   rsi_oversold: float = 40.0) -> Dict[str, Any]:
+        """Summarize the overall market health using the latest stored indicators."""
+        try:
+            query = f"""
+            WITH latest_dates AS (
+                SELECT symbol, MAX(date) AS latest_date
+                FROM {self.price_table}
+                GROUP BY symbol
+            ),
+            latest_data AS (
+                SELECT
+                    p.symbol,
+                    p.close,
+                    p.date,
+                    i.sma_20,
+                    i.sma_50,
+                    i.rsi_14
+                FROM {self.price_table} p
+                JOIN latest_dates ld ON p.symbol = ld.symbol AND p.date = ld.latest_date
+                LEFT JOIN {self.indicators_table} i ON p.symbol = i.symbol AND p.date = i.date
+            )
+            SELECT
+                COUNT(*) AS total_stocks,
+                SUM(CASE WHEN sma_20 IS NOT NULL AND close > sma_20 THEN 1 ELSE 0 END) AS above_sma_20,
+                SUM(CASE WHEN sma_50 IS NOT NULL AND close > sma_50 THEN 1 ELSE 0 END) AS above_sma_50,
+                SUM(CASE WHEN sma_20 IS NOT NULL AND sma_50 IS NOT NULL AND sma_20 > sma_50 THEN 1 ELSE 0 END) AS bullish_trend,
+                SUM(CASE WHEN sma_20 IS NOT NULL AND sma_50 IS NOT NULL AND sma_20 < sma_50 THEN 1 ELSE 0 END) AS bearish_trend,
+                SUM(CASE WHEN rsi_14 IS NOT NULL AND rsi_14 >= ? THEN 1 ELSE 0 END) AS rsi_overbought,
+                SUM(CASE WHEN rsi_14 IS NOT NULL AND rsi_14 <= ? THEN 1 ELSE 0 END) AS rsi_oversold,
+                AVG(rsi_14) AS avg_rsi,
+                AVG(
+                    CASE
+                        WHEN sma_20 IS NOT NULL AND sma_50 IS NOT NULL AND sma_50 != 0
+                            THEN ((sma_20 - sma_50) / sma_50) * 100
+                    END
+                ) AS avg_trend_strength
+            FROM latest_data
+            """
+
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(query, (rsi_overbought, rsi_oversold))
+                row = cursor.fetchone()
+
+                if not row:
+                    return {}
+
+                total = int(row[0]) if row[0] is not None else 0
+                above_sma_20 = int(row[1]) if row[1] is not None else 0
+                above_sma_50 = int(row[2]) if row[2] is not None else 0
+                bullish = int(row[3]) if row[3] is not None else 0
+                bearish = int(row[4]) if row[4] is not None else 0
+                overbought = int(row[5]) if row[5] is not None else 0
+                oversold = int(row[6]) if row[6] is not None else 0
+                avg_rsi = float(row[7]) if row[7] is not None else None
+                avg_trend_strength = float(row[8]) if row[8] is not None else None
+
+                neutral_trend = max(total - bullish - bearish, 0)
+
+                return {
+                    'total_stocks': total,
+                    'above_sma_20': above_sma_20,
+                    'above_sma_50': above_sma_50,
+                    'bullish_trend': bullish,
+                    'bearish_trend': bearish,
+                    'neutral_trend': neutral_trend,
+                    'rsi_overbought': overbought,
+                    'rsi_oversold': oversold,
+                    'avg_rsi': avg_rsi,
+                    'avg_trend_strength': avg_trend_strength
+                }
+
+        except Exception as e:
+            self._log(f"Error generating market health snapshot: {e}")
+            return {}
 
     def count_total_stocks_with_data(self) -> int:
         """Count distinct symbols that have recent price data stored."""
@@ -520,6 +660,7 @@ class StockDataManager(DatabaseManager):
             JOIN latest_dates ld ON p.symbol = ld.symbol AND p.date = ld.latest_date
             JOIN {self.indicators_table} i ON p.symbol = i.symbol AND p.date = i.date
             WHERE i.{sma_column} IS NOT NULL
+                AND i.{sma_column} != 0
                 AND p.close > i.{sma_column}
                 {distance_filter}
             """

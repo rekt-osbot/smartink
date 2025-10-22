@@ -4,6 +4,7 @@ Filters out irrelevant stocks to improve performance and focus on tradeable secu
 """
 
 import sqlite3
+import statistics
 import pandas as pd
 import yfinance as yf
 from typing import List, Dict, Optional, Tuple
@@ -45,6 +46,7 @@ class StockFilter:
         self._filtered_stocks_cache = None
         self._cache_timestamp = None
         self._cache_duration_hours = 24  # Cache for 24 hours
+        self._last_market_summary = {}
     
     def _log(self, message: str):
         """Print message if verbose mode is enabled."""
@@ -174,7 +176,79 @@ class StockFilter:
 
         self._log(f"Successfully fetched data for {len(stock_data)} stocks")
         return stock_data
-    
+
+    def summarize_market_data(self, market_data: Dict[str, Dict[str, float]]) -> Dict[str, float]:
+        """Generate aggregate statistics for fetched market data."""
+        if not market_data:
+            return {}
+
+        def safe_stat(func, values):
+            try:
+                return round(func(values), 2)
+            except (statistics.StatisticsError, TypeError, ValueError):
+                return None
+
+        market_caps = [
+            data.get('market_cap_cr')
+            for data in market_data.values()
+            if data and data.get('market_cap_cr') is not None and data.get('market_cap_cr') > 0
+        ]
+        trading_values = [
+            data.get('avg_trading_value_l')
+            for data in market_data.values()
+            if data and data.get('avg_trading_value_l') is not None and data.get('avg_trading_value_l') > 0
+        ]
+
+        market_cap_pass = sum(
+            1
+            for data in market_data.values()
+            if data and data.get('market_cap_cr') is not None and data.get('market_cap_cr') >= self.min_market_cap_cr
+        )
+        trading_value_pass = sum(
+            1
+            for data in market_data.values()
+            if data and data.get('avg_trading_value_l') is not None and data.get('avg_trading_value_l') >= self.min_daily_value_l
+        )
+        meets_both = sum(
+            1
+            for data in market_data.values()
+            if data
+            and data.get('market_cap_cr') is not None
+            and data.get('market_cap_cr') >= self.min_market_cap_cr
+            and data.get('avg_trading_value_l') is not None
+            and data.get('avg_trading_value_l') >= self.min_daily_value_l
+        )
+
+        data_points = sum(
+            1 for data in market_data.values()
+            if data and (
+                (data.get('market_cap_cr') is not None and data.get('market_cap_cr') > 0)
+                or (data.get('avg_trading_value_l') is not None and data.get('avg_trading_value_l') > 0)
+            )
+        )
+
+        sample_size = len(market_data)
+        liquidity_coverage = round(meets_both / sample_size * 100, 1) if sample_size else 0.0
+        data_coverage = round(data_points / sample_size * 100, 1) if sample_size else 0.0
+
+        summary = {
+            'sample_size': sample_size,
+            'with_market_cap': len(market_caps),
+            'with_trading_value': len(trading_values),
+            'median_market_cap_cr': safe_stat(statistics.median, market_caps),
+            'median_trading_value_l': safe_stat(statistics.median, trading_values),
+            'avg_trading_value_l': safe_stat(statistics.mean, trading_values),
+            'market_cap_pass_count': market_cap_pass,
+            'trading_value_pass_count': trading_value_pass,
+            'meets_thresholds': meets_both,
+            'liquidity_coverage_pct': liquidity_coverage,
+            'data_coverage_pct': data_coverage,
+            'market_cap_threshold_cr': self.min_market_cap_cr,
+            'daily_value_threshold_l': self.min_daily_value_l,
+        }
+
+        return summary
+
     def get_trading_volume_data(self, symbols: List[str], sample_size: int = 50) -> Dict[str, float]:
         """
         Get recent trading volume data to filter low-volume stocks.
@@ -215,12 +289,34 @@ class StockFilter:
 
         self._log(f"After series filter: {len(stocks_after_series)} stocks")
 
+        # Reset diagnostics for fresh run
+        self._last_market_summary = {}
+
         # Step 2: Apply market cap and trading volume filters efficiently
         if use_market_cap or use_trading_volume:
             # Get both market cap and volume data in one efficient call
             combined_data = self.get_market_cap_and_volume_data(stocks_after_series, sample_size)
 
             if combined_data:
+                self._last_market_summary = self.summarize_market_data(combined_data)
+                if self._last_market_summary:
+                    summary_parts = [f"sample={self._last_market_summary.get('sample_size', 0)}"]
+                    median_mcap = self._last_market_summary.get('median_market_cap_cr')
+                    median_turnover = self._last_market_summary.get('median_trading_value_l')
+                    data_coverage = self._last_market_summary.get('data_coverage_pct')
+                    liquidity_pct = self._last_market_summary.get('liquidity_coverage_pct')
+
+                    if median_mcap is not None:
+                        summary_parts.append(f"median mcap≈{median_mcap:.1f}cr")
+                    if median_turnover is not None:
+                        summary_parts.append(f"median turnover≈{median_turnover:.1f}L")
+                    if data_coverage is not None:
+                        summary_parts.append(f"data coverage {data_coverage:.1f}%")
+                    if liquidity_pct is not None:
+                        summary_parts.append(f"{liquidity_pct:.1f}% pass thresholds")
+
+                    self._log("Market data snapshot: " + " | ".join(summary_parts))
+
                 # Filter based on criteria
                 stocks_passing_filters = []
 
@@ -256,6 +352,10 @@ class StockFilter:
         self._log(f"Reduction: {len(stocks_after_series) - len(final_filtered_stocks)} stocks filtered out")
 
         return final_filtered_stocks
+
+    def get_last_market_summary(self) -> Dict[str, float]:
+        """Return the most recent market diagnostics from filtering."""
+        return self._last_market_summary or {}
 
     def filter_stocks_with_data(self, stock_data_dict: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
         """
