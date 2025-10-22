@@ -333,24 +333,18 @@ class TechnicalAnalyzer:
         """
         try:
             stats = {}
-            
-            # Count stocks above SMA
-            stocks_above_sma = self.get_stocks_above_sma(20)
-            stats['stocks_above_20_sma'] = len(stocks_above_sma) if stocks_above_sma is not None else 0
-            
-            # Count open=high patterns
-            open_high_patterns = self.get_open_high_patterns()
-            stats['open_high_patterns'] = len(open_high_patterns) if open_high_patterns is not None else 0
-            
-            # Count total stocks with data
-            latest_prices = self.data_manager.get_latest_prices(limit=10000)
-            if latest_prices is not None:
-                stats['total_stocks_with_data'] = latest_prices['symbol'].nunique()
-            else:
-                stats['total_stocks_with_data'] = 0
-            
+
+            # Count stocks above 20-day SMA using efficient SQL query
+            stats['stocks_above_20_sma'] = self.data_manager.count_stocks_above_sma(20)
+
+            # Count open=high breakout patterns
+            stats['open_high_patterns'] = self.data_manager.count_open_high_patterns()
+
+            # Count total stocks with recent price data
+            stats['total_stocks_with_data'] = self.data_manager.count_total_stocks_with_data()
+
             return stats
-            
+
         except Exception as e:
             self._log(f"Error getting summary statistics: {e}")
             return {}
