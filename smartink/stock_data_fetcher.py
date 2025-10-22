@@ -214,29 +214,71 @@ class StockDataFetcher:
             # Silently handle errors - this is expected for many stocks
             return None
     
+    def _calculate_rsi_series(self, close: pd.Series, window: int = 14) -> pd.Series:
+        """Calculate the Relative Strength Index (RSI) for a close price series."""
+        if close.empty:
+            return pd.Series(dtype=float)
+
+        delta = close.diff()
+        gains = delta.clip(lower=0)
+        losses = -delta.clip(upper=0)
+
+        avg_gain = gains.ewm(alpha=1 / window, adjust=False, min_periods=window).mean()
+        avg_loss = losses.ewm(alpha=1 / window, adjust=False, min_periods=window).mean()
+
+        rs = avg_gain / avg_loss.replace(to_replace=0, value=np.nan)
+        rsi = 100 - (100 / (1 + rs))
+
+        # Handle divisions by zero gracefully
+        rsi = rsi.fillna(0)
+        rsi = rsi.where(avg_loss != 0, 100.0)
+        rsi = rsi.where(avg_gain != 0, 0.0)
+
+        return rsi
+
+    def calculate_indicators(self, data: pd.DataFrame) -> pd.DataFrame:
+        """Enrich OHLCV data with core indicators used across the app."""
+        if data is None or data.empty:
+            return data
+
+        data = data.sort_values('date').copy()
+
+        for window in (20, 50):
+            column_name = f'sma_{window}'
+            data[column_name] = data['close'].rolling(window=window, min_periods=window).mean()
+
+        data['rsi_14'] = self._calculate_rsi_series(data['close'], window=14)
+
+        return data
+
     def calculate_sma(self, data: pd.DataFrame, window: int = 20) -> pd.DataFrame:
         """
-        Calculate Simple Moving Average for the close price.
-        
+        Calculate Simple Moving Average for the close price and attach auxiliary indicators.
+
         Args:
             data (pd.DataFrame): OHLCV data
             window (int): SMA window period
-            
+
         Returns:
-            pd.DataFrame: Data with SMA column added
+            pd.DataFrame: Data with SMA and related indicator columns added
         """
-        if len(data) < window:
-            self._log(f"Not enough data for {window}-day SMA calculation")
+        if data is None or data.empty:
+            data = data.copy() if data is not None else pd.DataFrame()
             data[f'sma_{window}'] = np.nan
             return data
-        
-        # Sort by date to ensure proper SMA calculation
+
+        if len(data) < window:
+            self._log(
+                f"Not enough data for {window}-day SMA calculation; results will contain NaN values"
+            )
+
         data = data.sort_values('date').copy()
-        
-        # Calculate SMA
         data[f'sma_{window}'] = data['close'].rolling(window=window, min_periods=window).mean()
-        
-        return data
+
+        enriched = self.calculate_indicators(data)
+        enriched[f'sma_{window}'] = data[f'sma_{window}']
+
+        return enriched
     
     def fetch_multiple_stocks_bulk(self, symbols: List[str], period: str = "3mo") -> Dict[str, pd.DataFrame]:
         """
