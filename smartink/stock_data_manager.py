@@ -4,6 +4,7 @@ This module extends the database schema to include price and volume data.
 """
 
 import sqlite3
+import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
@@ -307,84 +308,284 @@ class StockDataManager(DatabaseManager):
             return None
     
     def get_stocks_near_sma_breakout(self, sma_period: int = 20, max_distance: float = 5.0) -> Optional[pd.DataFrame]:
-        """
-        Get stocks near SMA that are breaking out (within ±5% of SMA for fresh opportunities).
+        """Return enhanced breakout intelligence for stocks near a simple moving average."""
 
-        Args:
-            sma_period (int): SMA period (20 or 50)
-            max_distance (float): Maximum percentage distance from SMA (default 5%)
-
-        Returns:
-            Optional[pd.DataFrame]: Stocks near SMA breakout or None
-        """
         try:
             sma_column = f"sma_{sma_period}"
 
             query = f"""
-            SELECT
-                p.symbol,
-                p.date,
-                p.open,
-                p.high,
-                p.low,
-                p.close,
-                p.volume,
-                i.{sma_column},
-                i.sma_20,
-                i.sma_50,
-                i.rsi_14,
-                CASE
-                    WHEN i.{sma_column} IS NOT NULL AND i.{sma_column} != 0
-                        THEN ((p.close - i.{sma_column}) / i.{sma_column} * 100)
-                END AS percentage_from_sma,
-                CASE
-                    WHEN p.close > i.{sma_column} THEN 'Above'
-                    WHEN p.close < i.{sma_column} THEN 'Below'
-                    ELSE 'At'
-                END as position_vs_sma,
-                CASE
-                    WHEN p.close > i.{sma_column} AND p.open <= i.{sma_column} THEN 'Fresh Breakout Above'
-                    WHEN p.close < i.{sma_column} AND p.open >= i.{sma_column} THEN 'Fresh Breakdown Below'
-                    WHEN p.close > i.{sma_column} THEN 'Holding Above'
-                    WHEN p.close < i.{sma_column} THEN 'Holding Below'
-                    ELSE 'At SMA'
-                END as breakout_status,
-                CASE
-                    WHEN i.sma_20 IS NOT NULL AND i.sma_50 IS NOT NULL AND i.sma_50 != 0
-                        THEN ROUND(((i.sma_20 - i.sma_50) / i.sma_50) * 100, 2)
-                END AS trend_strength,
-                CASE
-                    WHEN i.sma_20 IS NOT NULL AND i.sma_50 IS NOT NULL AND i.sma_20 > i.sma_50 THEN 'Bullish Bias'
-                    WHEN i.sma_20 IS NOT NULL AND i.sma_50 IS NOT NULL AND i.sma_20 < i.sma_50 THEN 'Bearish Bias'
-                    ELSE 'Neutral Bias'
-                END AS trend_bias,
-                CASE
-                    WHEN i.rsi_14 >= 60 THEN 'Overbought'
-                    WHEN i.rsi_14 <= 40 THEN 'Oversold'
-                    WHEN i.rsi_14 IS NULL THEN 'No Signal'
-                    ELSE 'Neutral'
-                END AS rsi_signal
-            FROM {self.price_table} p
-            JOIN {self.indicators_table} i ON p.symbol = i.symbol AND p.date = i.date
-            WHERE i.{sma_column} IS NOT NULL
-                AND i.{sma_column} != 0
-                AND ABS((p.close - i.{sma_column}) / i.{sma_column} * 100) <= ?
-                AND p.date = (
-                    SELECT MAX(date) FROM {self.price_table} p2
-                    WHERE p2.symbol = p.symbol
-                )
-            ORDER BY
-                CASE
-                    WHEN p.close > i.{sma_column} AND p.open <= i.{sma_column} THEN 1
-                    WHEN p.close < i.{sma_column} AND p.open >= i.{sma_column} THEN 2
-                    ELSE 3
-                END,
-                ABS((p.close - i.{sma_column}) / i.{sma_column} * 100) ASC
+            WITH enriched AS (
+                SELECT
+                    p.symbol,
+                    p.date,
+                    p.open,
+                    p.high,
+                    p.low,
+                    p.close,
+                    p.volume,
+                    i.{sma_column} AS target_sma,
+                    i.sma_20,
+                    i.sma_50,
+                    i.rsi_14,
+                    LAG(p.open) OVER (PARTITION BY p.symbol ORDER BY p.date) AS prev_open,
+                    LAG(p.high) OVER (PARTITION BY p.symbol ORDER BY p.date) AS prev_high,
+                    LAG(p.low) OVER (PARTITION BY p.symbol ORDER BY p.date) AS prev_low,
+                    LAG(p.close) OVER (PARTITION BY p.symbol ORDER BY p.date) AS prev_close,
+                    LAG(p.volume) OVER (PARTITION BY p.symbol ORDER BY p.date) AS prev_volume,
+                    LAG(i.{sma_column}) OVER (PARTITION BY p.symbol ORDER BY p.date) AS prev_target_sma,
+                    LAG(i.sma_20) OVER (PARTITION BY p.symbol ORDER BY p.date) AS prev_sma_20,
+                    LAG(i.sma_50) OVER (PARTITION BY p.symbol ORDER BY p.date) AS prev_sma_50,
+                    LAG(i.rsi_14) OVER (PARTITION BY p.symbol ORDER BY p.date) AS prev_rsi_14,
+                    AVG(p.volume) OVER (
+                        PARTITION BY p.symbol
+                        ORDER BY p.date
+                        ROWS BETWEEN 5 PRECEDING AND 1 PRECEDING
+                    ) AS avg_volume_5,
+                    AVG(p.close) OVER (
+                        PARTITION BY p.symbol
+                        ORDER BY p.date
+                        ROWS BETWEEN 5 PRECEDING AND 1 PRECEDING
+                    ) AS avg_close_5,
+                    MAX(p.high) OVER (
+                        PARTITION BY p.symbol
+                        ORDER BY p.date
+                        ROWS BETWEEN 20 PRECEDING AND 1 PRECEDING
+                    ) AS rolling_high_20,
+                    MIN(p.low) OVER (
+                        PARTITION BY p.symbol
+                        ORDER BY p.date
+                        ROWS BETWEEN 20 PRECEDING AND 1 PRECEDING
+                    ) AS rolling_low_20,
+                    ROW_NUMBER() OVER (PARTITION BY p.symbol ORDER BY p.date DESC) AS rn
+                FROM {self.price_table} p
+                JOIN {self.indicators_table} i ON p.symbol = i.symbol AND p.date = i.date
+                WHERE i.{sma_column} IS NOT NULL
+                    AND i.{sma_column} != 0
+            )
+            SELECT *
+            FROM enriched
+            WHERE rn = 1
             """
 
             with self.get_connection() as conn:
-                df = pd.read_sql_query(query, conn, params=(max_distance,))
-                return df if not df.empty else None
+                df = pd.read_sql_query(query, conn)
+
+            if df.empty:
+                return None
+
+            df = df.drop(columns=["rn"])
+
+            sma_label = f"sma_{sma_period}"
+            prev_sma_label = f"prev_sma_{sma_period}"
+            df = df.rename(columns={
+                "target_sma": sma_label,
+                "prev_target_sma": prev_sma_label
+            })
+
+            def safe_pct(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
+                denominator_safe = denominator.replace({0: np.nan})
+                return (numerator / denominator_safe) * 100
+
+            df["trend_strength"] = safe_pct(df["sma_20"] - df["sma_50"], df["sma_50"])
+            df["trend_bias"] = np.select(
+                [
+                    (df["sma_20"].notna()) & (df["sma_50"].notna()) & (df["sma_20"] > df["sma_50"]),
+                    (df["sma_20"].notna()) & (df["sma_50"].notna()) & (df["sma_20"] < df["sma_50"])
+                ],
+                ["Bullish Bias", "Bearish Bias"],
+                default="Neutral Bias"
+            )
+            df["rsi_signal"] = np.select(
+                [
+                    df["rsi_14"].ge(60),
+                    df["rsi_14"].le(40),
+                    df["rsi_14"].isna()
+                ],
+                ["Overbought", "Oversold", "No Signal"],
+                default="Neutral"
+            )
+
+            df["percentage_from_sma"] = safe_pct(df["close"] - df[sma_label], df[sma_label])
+            df["prev_percentage_from_sma"] = safe_pct(
+                df["prev_close"] - df[prev_sma_label], df[prev_sma_label]
+            )
+            df["distance_change_pct"] = df["percentage_from_sma"] - df["prev_percentage_from_sma"]
+            df["high_break_pct"] = safe_pct(df["high"] - df[sma_label], df[sma_label])
+            df["low_break_pct"] = safe_pct(df["low"] - df[sma_label], df[sma_label])
+            df["close_vs_prev_close_pct"] = safe_pct(df["close"] - df["prev_close"], df["prev_close"])
+            df["volume_surge_ratio"] = np.where(
+                (df["avg_volume_5"].notna()) & (df["avg_volume_5"] > 0),
+                df["volume"] / df["avg_volume_5"],
+                np.nan
+            )
+            df["momentum_5"] = safe_pct(df["close"] - df["avg_close_5"], df["avg_close_5"])
+            df["twenty_day_breakout_pct"] = safe_pct(df["close"] - df["rolling_high_20"], df["rolling_high_20"])
+
+            small_tolerance = 0.1
+            df["position_vs_sma"] = np.select(
+                [
+                    df["percentage_from_sma"] > small_tolerance,
+                    df["percentage_from_sma"] < -small_tolerance
+                ],
+                ["Above", "Below"],
+                default="At"
+            )
+
+            breakout_confirm_pct = 0.35
+            retest_buffer_pct = 0.6
+            trigger_buffer_pct = 0.8
+
+            pct = df["percentage_from_sma"]
+            prev_pct = df["prev_percentage_from_sma"]
+            high_break = df["high_break_pct"]
+            low_break = df["low_break_pct"]
+            distance_change = df["distance_change_pct"].fillna(0)
+            momentum = df["momentum_5"].fillna(0)
+
+            fresh_breakout = (
+                (pct >= breakout_confirm_pct) &
+                (
+                    prev_pct.isna() |
+                    (prev_pct <= breakout_confirm_pct / 2) |
+                    (distance_change >= breakout_confirm_pct)
+                )
+            )
+
+            fresh_breakdown = (
+                (pct <= -breakout_confirm_pct) &
+                (
+                    prev_pct.isna() |
+                    (prev_pct >= -breakout_confirm_pct / 2) |
+                    (distance_change <= -breakout_confirm_pct)
+                )
+            )
+
+            retest_hold = (
+                (pct > breakout_confirm_pct / 2) &
+                (low_break >= -retest_buffer_pct) &
+                (low_break <= breakout_confirm_pct) &
+                (~fresh_breakout)
+            )
+
+            momentum_continuation = (
+                (pct > breakout_confirm_pct / 2) &
+                (prev_pct > breakout_confirm_pct / 2) &
+                (distance_change > 0) &
+                (momentum > 0) &
+                (~fresh_breakout) &
+                (~retest_hold)
+            )
+
+            failed_breakout = (
+                (pct < -small_tolerance) &
+                (high_break >= breakout_confirm_pct) &
+                (distance_change < 0)
+            )
+
+            trigger_watch = (
+                (pct >= -trigger_buffer_pct) &
+                (pct <= breakout_confirm_pct) &
+                (high_break >= -small_tolerance) &
+                (~fresh_breakout) &
+                (~retest_hold) &
+                (~momentum_continuation)
+            )
+
+            bearish_drift = (
+                (pct < -small_tolerance) &
+                (~fresh_breakdown) &
+                (~failed_breakout)
+            )
+
+            df["breakout_status"] = "At SMA"
+            df.loc[df["position_vs_sma"] == "Above", "breakout_status"] = "Holding Above"
+            df.loc[df["position_vs_sma"] == "Below", "breakout_status"] = "Holding Below"
+            df.loc[fresh_breakout, "breakout_status"] = "Fresh Breakout Above"
+            df.loc[fresh_breakdown, "breakout_status"] = "Fresh Breakdown Below"
+
+            default_signal = "Range-Bound / No Signal"
+            signal = np.array([default_signal] * len(df))
+            signal[fresh_breakout] = "Fresh Breakout (Confirmed)"
+            signal[fresh_breakdown] = "Fresh Breakdown (Confirmed)"
+            signal[retest_hold] = "Retest & Hold Above"
+            signal[momentum_continuation] = "Momentum Continuation"
+            signal[trigger_watch & (pct >= 0)] = "Breakout Watch (Compression)"
+            signal[trigger_watch & (pct < 0)] = "Breakout Watch (Slightly Below)"
+            signal[failed_breakout] = "Failed Breakout - Caution"
+            signal[bearish_drift & (~fresh_breakdown)] = "Bearish Drift / Breakdown Risk"
+            df["breakout_signal"] = signal
+
+            base_confidence = np.full(len(df), 40.0)
+            base_confidence[fresh_breakout] = 70.0
+            base_confidence[retest_hold] = 60.0
+            base_confidence[momentum_continuation] = 55.0
+            base_confidence[trigger_watch & (pct >= 0)] = 50.0
+            base_confidence[trigger_watch & (pct < 0)] = 45.0
+            base_confidence[failed_breakout] = 25.0
+            base_confidence[fresh_breakdown] = 65.0
+            base_confidence[bearish_drift & (~fresh_breakdown)] = 45.0
+
+            confidence = base_confidence
+            confidence += np.clip(pct, -3, 3)
+
+            vol_adj = np.clip(np.nan_to_num(df["volume_surge_ratio"], nan=1.0) - 1, -1, 3)
+            confidence += vol_adj * 5
+
+            confidence += np.clip(momentum / 2, -5, 5)
+
+            if "trend_bias" in df.columns:
+                confidence += np.where(
+                    df["trend_bias"] == "Bullish Bias",
+                    np.where(pct >= 0, 5, -5),
+                    0
+                )
+                confidence += np.where(
+                    df["trend_bias"] == "Bearish Bias",
+                    np.where(pct < 0, 5, -5),
+                    0
+                )
+
+            if "rsi_signal" in df.columns:
+                confidence += np.where(
+                    df["rsi_signal"] == "Overbought",
+                    np.where(pct >= 0, -5, 5),
+                    0
+                )
+                confidence += np.where(
+                    df["rsi_signal"] == "Oversold",
+                    np.where(pct < 0, -5, 5),
+                    0
+                )
+
+            df["breakout_confidence"] = np.clip(confidence, 0, 100)
+
+            signal_priority = np.full(len(df), 6.0)
+            signal_priority[fresh_breakout] = 1.0
+            signal_priority[retest_hold] = 2.0
+            signal_priority[momentum_continuation] = 3.0
+            signal_priority[trigger_watch & (pct >= 0)] = 3.5
+            signal_priority[trigger_watch & (pct < 0)] = 4.0
+            signal_priority[failed_breakout] = 4.5
+            signal_priority[fresh_breakdown] = 1.5
+            signal_priority[bearish_drift & (~fresh_breakdown)] = 5.0
+
+            selection_mask = (
+                df["percentage_from_sma"].abs() <= max_distance
+            ) | fresh_breakout | fresh_breakdown | trigger_watch | failed_breakout
+
+            filtered_df = df.loc[selection_mask].copy()
+
+            if filtered_df.empty:
+                return None
+
+            filtered_df.insert(0, "rank_priority", signal_priority[filtered_df.index])
+            filtered_df = filtered_df.sort_values(
+                by=["rank_priority", "breakout_confidence", "percentage_from_sma", "symbol"],
+                ascending=[True, False, True, True]
+            )
+            filtered_df = filtered_df.drop(columns=["rank_priority"])
+
+            return filtered_df.reset_index(drop=True)
 
         except Exception as e:
             self._log(f"Error getting stocks near SMA breakout: {e}")

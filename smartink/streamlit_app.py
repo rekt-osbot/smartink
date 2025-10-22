@@ -5,6 +5,7 @@ A modern web-based interface for stock analysis and screening.
 
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
@@ -527,10 +528,11 @@ def show_top_performers_chart(sma_period):
         breakout_opportunities = None
 
     if breakout_opportunities is not None and not breakout_opportunities.empty:
-        # Get top 10 opportunities (closest to SMA or fresh breakouts)
-        top_opportunities = breakout_opportunities.head(10)
+        top_opportunities = breakout_opportunities.sort_values(
+            by=['breakout_confidence', 'percentage_from_sma'],
+            ascending=[False, True]
+        ).head(10).copy()
 
-        # Color code by breakout status
         color_map = {
             'Fresh Breakout Above': '#2ecc71',
             'Fresh Breakdown Below': '#e74c3c',
@@ -539,20 +541,41 @@ def show_top_performers_chart(sma_period):
             'At SMA': '#95a5a6'
         }
 
-        colors = [color_map.get(status, '#95a5a6') for status in top_opportunities['breakout_status']]
-
         fig = px.bar(
             top_opportunities,
             x='percentage_from_sma',
             y='symbol',
             orientation='h',
-            title=f"Top 10 SMA Breakout Opportunities",
+            title="Top 10 SMA Breakout Opportunities",
             labels={'percentage_from_sma': '% From SMA', 'symbol': 'Stock Symbol'},
             color='breakout_status',
             color_discrete_map=color_map
         )
 
-        fig.update_layout(height=400, yaxis={'categoryorder': 'total ascending'})
+        if 'breakout_confidence' in top_opportunities.columns:
+            custom_hover = top_opportunities[[
+                'breakout_confidence',
+                'breakout_signal',
+                'volume_surge_ratio'
+            ]].to_numpy()
+            fig.update_traces(
+                customdata=custom_hover,
+                hovertemplate=(
+                    "<b>%{y}</b><br>"
+                    "% From SMA: %{x:.2f}%<br>"
+                    "Confidence: %{customdata[0]:.0f}/100<br>"
+                    "Signal: %{customdata[1]}<br>"
+                    "Volume Surge: %{customdata[2]:.2f}x"
+                )
+            )
+        else:
+            fig.update_traces(hovertemplate="<b>%{y}</b><br>% From SMA: %{x:.2f}%")
+
+        fig.update_layout(
+            height=400,
+            yaxis={'categoryorder': 'array', 'categoryarray': top_opportunities['symbol'].iloc[::-1].tolist()},
+            legend_title_text='Breakout Status'
+        )
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.info(f"No actionable opportunities near {sma_period}-day SMA")
@@ -565,56 +588,123 @@ def show_sma_breakout_opportunities(sma_period):
     if not ensure_data_is_fetched():
         return
 
-    # Add controls for breakout analysis
-    col1, col2 = st.columns(2)
-    with col1:
+    control_cols = st.columns([2, 1, 1])
+    with control_cols[0]:
         max_distance = st.slider(
             "Max Distance from SMA (%)",
             1.0, 10.0, 5.0, 0.5,
             help="Stocks within this percentage of the SMA (±)"
         )
-    with col2:
-        breakout_filter = st.selectbox(
-            "Filter by Status",
-            ["All", "Fresh Breakouts Only", "Fresh Breakdowns Only", "Holding Above", "Holding Below"]
-        )
 
-    # Get breakout opportunities
     breakout_stocks = get_cached_stocks_near_sma_breakout(st.session_state.analyzer, sma_period, max_distance)
 
     if breakout_stocks is None or breakout_stocks.empty:
         st.info(f"No stocks found within ±{max_distance}% of their {sma_period}-day SMA.")
         return
 
-    # Apply breakout filter
-    if breakout_filter != "All":
-        if breakout_filter == "Fresh Breakouts Only":
-            breakout_stocks = breakout_stocks[breakout_stocks['breakout_status'] == 'Fresh Breakout Above']
-        elif breakout_filter == "Fresh Breakdowns Only":
-            breakout_stocks = breakout_stocks[breakout_stocks['breakout_status'] == 'Fresh Breakdown Below']
-        elif breakout_filter == "Holding Above":
-            breakout_stocks = breakout_stocks[breakout_stocks['breakout_status'] == 'Holding Above']
-        elif breakout_filter == "Holding Below":
-            breakout_stocks = breakout_stocks[breakout_stocks['breakout_status'] == 'Holding Below']
+    statuses = breakout_stocks['breakout_status'].dropna().unique().tolist()
+    status_options = ["All"]
+    if 'Fresh Breakout Above' in statuses:
+        status_options.append("Fresh Breakouts Only")
+    if 'Fresh Breakdown Below' in statuses:
+        status_options.append("Fresh Breakdowns Only")
+    if 'Holding Above' in statuses:
+        status_options.append("Holding Above")
+    if 'Holding Below' in statuses:
+        status_options.append("Holding Below")
+    if 'At SMA' in statuses:
+        status_options.append("At SMA")
 
-    # Summary metrics
-    col1, col2, col3, col4 = st.columns(4)
+    with control_cols[1]:
+        breakout_filter = st.selectbox(
+            "Filter by Status",
+            status_options
+        )
+
+    with control_cols[2]:
+        min_confidence = st.slider(
+            "Min Confidence",
+            0, 100, 0, 5,
+            help="Highlight setups scoring above this breakout confidence threshold."
+        )
+
+    signal_options = ["All"]
+    if 'breakout_signal' in breakout_stocks.columns:
+        unique_signals = sorted(sig for sig in breakout_stocks['breakout_signal'].dropna().unique())
+        signal_options.extend(unique_signals)
+
+    signal_filter = st.selectbox(
+        "Focus on Signal",
+        signal_options,
+        help="Drill into specific behaviours such as retests, failed breakouts or watchlist setups."
+    )
+
+    filtered_breakouts = breakout_stocks.copy()
+
+    if breakout_filter != "All":
+        status_map = {
+            "Fresh Breakouts Only": 'Fresh Breakout Above',
+            "Fresh Breakdowns Only": 'Fresh Breakdown Below',
+            "Holding Above": 'Holding Above',
+            "Holding Below": 'Holding Below',
+            "At SMA": 'At SMA'
+        }
+        target_status = status_map.get(breakout_filter)
+        if target_status:
+            filtered_breakouts = filtered_breakouts[filtered_breakouts['breakout_status'] == target_status]
+
+    if signal_filter != "All" and 'breakout_signal' in filtered_breakouts.columns:
+        filtered_breakouts = filtered_breakouts[filtered_breakouts['breakout_signal'] == signal_filter]
+
+    if min_confidence > 0 and 'breakout_confidence' in filtered_breakouts.columns:
+        filtered_breakouts = filtered_breakouts[filtered_breakouts['breakout_confidence'] >= min_confidence]
+
+    if filtered_breakouts.empty:
+        st.info("No stocks match the selected filters.")
+        return
+
+    col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
-        st.metric("Total Opportunities", len(breakout_stocks))
+        st.metric("Total Opportunities", len(filtered_breakouts))
     with col2:
-        fresh_breakouts = len(breakout_stocks[breakout_stocks['breakout_status'] == 'Fresh Breakout Above'])
+        fresh_breakouts = len(filtered_breakouts[filtered_breakouts['breakout_status'] == 'Fresh Breakout Above'])
         st.metric("🟢 Fresh Breakouts", fresh_breakouts)
     with col3:
-        fresh_breakdowns = len(breakout_stocks[breakout_stocks['breakout_status'] == 'Fresh Breakdown Below'])
+        fresh_breakdowns = len(filtered_breakouts[filtered_breakouts['breakout_status'] == 'Fresh Breakdown Below'])
         st.metric("🔴 Fresh Breakdowns", fresh_breakdowns)
     with col4:
-        avg_distance = breakout_stocks['percentage_from_sma'].abs().mean()
+        avg_distance = filtered_breakouts['percentage_from_sma'].abs().mean()
         st.metric("Avg Distance from SMA", f"{avg_distance:.1f}%")
+    with col5:
+        if 'breakout_confidence' in filtered_breakouts.columns:
+            avg_conf = filtered_breakouts['breakout_confidence'].mean()
+            st.metric("Avg Confidence", f"{avg_conf:.0f}/100")
+        else:
+            st.metric("Avg Confidence", "—")
 
-    # Breakout status distribution
+    if 'breakout_confidence' in filtered_breakouts.columns:
+        col6, col7, col8 = st.columns(3)
+        with col6:
+            high_conf = int((filtered_breakouts['breakout_confidence'] >= 70).sum())
+            st.metric("High Conviction (≥70)", high_conf)
+        with col7:
+            if 'volume_surge_ratio' in filtered_breakouts.columns:
+                volume_series = pd.to_numeric(filtered_breakouts['volume_surge_ratio'], errors='coerce')
+                volume_series = volume_series.replace([np.inf, -np.inf], np.nan).dropna()
+                avg_volume_surge = volume_series.mean() if not volume_series.empty else np.nan
+            else:
+                avg_volume_surge = np.nan
+            st.metric("Avg Volume Surge", f"{avg_volume_surge:.2f}x" if not np.isnan(avg_volume_surge) else "—")
+        with col8:
+            if 'momentum_5' in filtered_breakouts.columns:
+                momentum_series = pd.to_numeric(filtered_breakouts['momentum_5'], errors='coerce').dropna()
+                avg_momentum = momentum_series.mean() if not momentum_series.empty else np.nan
+            else:
+                avg_momentum = np.nan
+            st.metric("Avg 5D Momentum", f"{avg_momentum:.2f}%" if not np.isnan(avg_momentum) else "—")
+
     st.subheader("📊 Breakout Status Distribution")
-    status_counts = breakout_stocks['breakout_status'].value_counts()
-
+    status_counts = filtered_breakouts['breakout_status'].value_counts()
     fig = px.bar(
         x=status_counts.index,
         y=status_counts.values,
@@ -626,16 +716,61 @@ def show_sma_breakout_opportunities(sma_period):
     fig.update_layout(height=300)
     st.plotly_chart(fig, use_container_width=True)
 
-    # Interactive table
+    if 'breakout_signal' in filtered_breakouts.columns:
+        signal_counts = filtered_breakouts['breakout_signal'].value_counts()
+        if not signal_counts.empty:
+            st.subheader("🧠 Breakout Signal Mix")
+            signal_fig = px.bar(
+                x=signal_counts.index,
+                y=signal_counts.values,
+                labels={'x': 'Signal', 'y': 'Number of Stocks'},
+                color=signal_counts.values,
+                color_continuous_scale='plasma'
+            )
+            signal_fig.update_layout(height=320, xaxis_tickangle=-30)
+            st.plotly_chart(signal_fig, use_container_width=True)
+
+    if 'breakout_confidence' in filtered_breakouts.columns:
+        st.subheader("⚡ Confidence vs Distance")
+        scatter_source = filtered_breakouts.copy()
+        if 'volume_surge_ratio' in scatter_source.columns:
+            scatter_source['volume_surge_ratio'] = pd.to_numeric(
+                scatter_source['volume_surge_ratio'], errors='coerce'
+            ).replace([np.inf, -np.inf], np.nan).fillna(1.0)
+        else:
+            scatter_source['volume_surge_ratio'] = 1.0
+        hover_fields = {
+            'symbol': True,
+            'breakout_status': True,
+            'volume_surge_ratio': ':.2f'
+        }
+        if 'momentum_5' in scatter_source.columns:
+            hover_fields['momentum_5'] = ':.2f'
+
+        scatter_kwargs = dict(
+            x='percentage_from_sma',
+            y='breakout_confidence',
+            size='volume_surge_ratio',
+            hover_data=hover_fields,
+            labels={'percentage_from_sma': '% From SMA', 'breakout_confidence': 'Confidence Score'}
+        )
+        if 'breakout_signal' in scatter_source.columns:
+            scatter_kwargs['color'] = 'breakout_signal'
+        confidence_fig = px.scatter(scatter_source, **scatter_kwargs)
+        confidence_fig.update_layout(height=360)
+        st.plotly_chart(confidence_fig, use_container_width=True)
+
     st.subheader("🎯 Actionable Opportunities")
 
-    # Format the dataframe for display
-    display_df = breakout_stocks.copy()
+    display_df = filtered_breakouts.copy()
     display_df['close'] = display_df['close'].round(2)
     display_df[f'sma_{sma_period}'] = display_df[f'sma_{sma_period}'].round(2)
     display_df['percentage_from_sma'] = display_df['percentage_from_sma'].round(2)
+    if 'high_break_pct' in display_df.columns:
+        display_df['high_break_pct'] = display_df['high_break_pct'].round(2)
+    if 'momentum_5' in display_df.columns:
+        display_df['momentum_5'] = display_df['momentum_5'].round(2)
 
-    # Add status emoji
     status_emoji_map = {
         'Fresh Breakout Above': '🟢',
         'Fresh Breakdown Below': '🔴',
@@ -643,46 +778,94 @@ def show_sma_breakout_opportunities(sma_period):
         'Holding Below': '🟠',
         'At SMA': '⚪'
     }
-    display_df['status_display'] = display_df['breakout_status'].map(
+    display_df['Breakout Status'] = display_df['breakout_status'].map(
         lambda x: f"{status_emoji_map.get(x, '⚪')} {x}"
     )
 
-    # Rename columns for better display
-    column_mapping = {
-        'symbol': 'Symbol',
-        'close': 'Current Price',
-        f'sma_{sma_period}': f'{sma_period}-Day SMA',
-        'percentage_from_sma': '% From SMA',
-        'status_display': 'Breakout Status',
-        'volume': 'Volume',
-        'date': 'Date'
+    signal_emoji_map = {
+        'Fresh Breakout (Confirmed)': '🚀',
+        'Retest & Hold Above': '🛡️',
+        'Momentum Continuation': '📈',
+        'Breakout Watch (Compression)': '⏳',
+        'Breakout Watch (Slightly Below)': '👀',
+        'Failed Breakout - Caution': '⚠️',
+        'Fresh Breakdown (Confirmed)': '⛔',
+        'Bearish Drift / Breakdown Risk': '📉',
+        'Range-Bound / No Signal': '➖'
     }
-    display_df = display_df.rename(columns=column_mapping)
+    if 'breakout_signal' in display_df.columns:
+        display_df['Breakout Signal'] = display_df['breakout_signal'].map(
+            lambda x: f"{signal_emoji_map.get(x, '➖')} {x}" if pd.notna(x) else '➖'
+        )
 
-    # Select columns to display
-    display_columns = ['Symbol', 'Current Price', f'{sma_period}-Day SMA', '% From SMA', 'Breakout Status', 'Volume', 'Date']
+    display_df['Symbol'] = display_df['symbol']
+    display_df['Current Price'] = display_df['close']
+    display_df[f'{sma_period}-Day SMA'] = display_df[f'sma_{sma_period}']
+    display_df['% From SMA'] = display_df['percentage_from_sma']
+    display_df['Volume'] = pd.to_numeric(display_df['volume'], errors='coerce').round(0).astype('Int64')
+    display_df['Volume xAvg'] = display_df.get('volume_surge_ratio').apply(
+        lambda x: f"{x:.2f}x" if pd.notna(x) else '—'
+    ) if 'volume_surge_ratio' in display_df.columns else '—'
+    if 'breakout_confidence' in display_df.columns:
+        display_df['Confidence Score'] = pd.to_numeric(display_df['breakout_confidence'], errors='coerce').round(0)
+    if 'momentum_5' in display_df.columns:
+        display_df['5D Momentum %'] = display_df['momentum_5']
+    display_df['Trend Bias'] = display_df.get('trend_bias', 'Neutral Bias')
+    display_df['RSI Signal'] = display_df.get('rsi_signal', 'Neutral')
+    display_df['Date'] = display_df['date']
+
+    display_columns = [
+        'Symbol',
+        'Current Price',
+        f'{sma_period}-Day SMA',
+        '% From SMA',
+        'Breakout Status'
+    ]
+    if 'Breakout Signal' in display_df.columns:
+        display_columns.append('Breakout Signal')
+    if 'Confidence Score' in display_df.columns:
+        display_columns.append('Confidence Score')
+    display_columns.extend(['Volume', 'Volume xAvg'])
+    if '5D Momentum %' in display_df.columns:
+        display_columns.append('5D Momentum %')
+    display_columns.extend(['Trend Bias', 'RSI Signal', 'Date'])
+
+    column_config = {
+        '% From SMA': st.column_config.NumberColumn(
+            '% From SMA',
+            help="Percentage distance from SMA (+ above, - below)",
+            format="%.2f%%"
+        ),
+        'Volume': st.column_config.NumberColumn(
+            'Volume',
+            help="Trading volume",
+            format="%d"
+        )
+    }
+    if 'Confidence Score' in display_columns:
+        column_config['Confidence Score'] = st.column_config.NumberColumn(
+            'Confidence Score',
+            help="Composite confidence out of 100",
+            min_value=0,
+            max_value=100,
+            format="%d"
+        )
+    if '5D Momentum %' in display_columns:
+        column_config['5D Momentum %'] = st.column_config.NumberColumn(
+            '5D Momentum %',
+            help="Momentum relative to the prior 5-day average",
+            format="%.2f%%"
+        )
 
     st.dataframe(
         display_df[display_columns],
         use_container_width=True,
         hide_index=True,
-        column_config={
-            "% From SMA": st.column_config.NumberColumn(
-                "% From SMA",
-                help="Percentage distance from SMA (+ above, - below)",
-                format="%.2f%%"
-            ),
-            "Volume": st.column_config.NumberColumn(
-                "Volume",
-                help="Trading volume",
-                format="%d"
-            )
-        }
+        column_config=column_config
     )
 
-    # Export functionality
     if st.button("📥 Export Opportunities to CSV"):
-        csv = breakout_stocks.to_csv(index=False)
+        csv = filtered_breakouts.to_csv(index=False)
         st.download_button(
             label="Download CSV",
             data=csv,
@@ -690,21 +873,28 @@ def show_sma_breakout_opportunities(sma_period):
             mime="text/csv"
         )
 
-    # Trading insights
     st.subheader("💡 Trading Insights")
 
-    fresh_breakouts_count = len(breakout_stocks[breakout_stocks['breakout_status'] == 'Fresh Breakout Above'])
-    fresh_breakdowns_count = len(breakout_stocks[breakout_stocks['breakout_status'] == 'Fresh Breakdown Below'])
+    fresh_breakouts_count = len(filtered_breakouts[filtered_breakouts['breakout_status'] == 'Fresh Breakout Above'])
+    fresh_breakdowns_count = len(filtered_breakouts[filtered_breakouts['breakout_status'] == 'Fresh Breakdown Below'])
+    high_confidence_count = int((filtered_breakouts.get('breakout_confidence', pd.Series(dtype=float)) >= 70).sum()) if 'breakout_confidence' in filtered_breakouts.columns else 0
+    failed_breakouts_count = int(filtered_breakouts.get('breakout_signal', pd.Series(dtype=str)).str.contains('Failed Breakout', na=False).sum()) if 'breakout_signal' in filtered_breakouts.columns else 0
+    watchlist_count = int(filtered_breakouts.get('breakout_signal', pd.Series(dtype=str)).str.contains('Breakout Watch', na=False).sum()) if 'breakout_signal' in filtered_breakouts.columns else 0
 
     if fresh_breakouts_count > 0:
-        st.success(f"🟢 **{fresh_breakouts_count} Fresh Breakouts** - Stocks breaking above {sma_period}-day SMA today. Consider for long positions.")
+        st.success(f"🟢 **{fresh_breakouts_count} Fresh Breakouts** - Stocks breaking above {sma_period}-day SMA today. Consider for long setups.")
+
+    if high_confidence_count > 0:
+        st.success(f"🔥 **{high_confidence_count} High-Conviction setups** scoring ≥70. These combine price action, momentum and volume alignment.")
 
     if fresh_breakdowns_count > 0:
-        st.error(f"🔴 **{fresh_breakdowns_count} Fresh Breakdowns** - Stocks breaking below {sma_period}-day SMA today. Consider for short positions or avoid.")
+        st.error(f"🔴 **{fresh_breakdowns_count} Fresh Breakdowns** - Breakdown risk below {sma_period}-day SMA. Consider hedging or avoiding.")
 
-    holding_above = len(breakout_stocks[breakout_stocks['breakout_status'] == 'Holding Above'])
-    if holding_above > 0:
-        st.info(f"🟡 **{holding_above} Holding Above** - Stocks maintaining above {sma_period}-day SMA. Monitor for continuation.")
+    if failed_breakouts_count > 0:
+        st.warning(f"⚠️ **{failed_breakouts_count} Failed Breakouts** - Price slipped back under the SMA after testing higher. Watch for support before re-entry.")
+
+    if watchlist_count > 0:
+        st.info(f"👀 **{watchlist_count} Breakout Watch candidates** - Price is coiling near the SMA. Add alerts for confirmation moves.")
 
 def show_stocks_above_sma(sma_period):
     """Show detailed view of stocks above SMA."""
