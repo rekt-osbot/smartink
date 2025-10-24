@@ -25,6 +25,12 @@ def _safe_pct(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
 def _calculate_derived_metrics(df: pd.DataFrame, sma_label: str, prev_sma_label: str) -> pd.DataFrame:
     """Enrich the raw breakout dataset with derivative metrics used across the signal pipeline."""
     metrics = df.copy()
+    if metrics.index.has_duplicates:
+        # Downstream arithmetic expects row-wise alignment; duplicate indexes trigger
+        # pandas' alignment safeguards and raise ``ValueError: cannot reindex on an axis
+        # with duplicate labels``. A fresh default index preserves the row ordering while
+        # guaranteeing uniqueness so element-wise math succeeds.
+        metrics.reset_index(drop=True, inplace=True)
     metrics["trend_strength"] = _safe_pct(metrics["sma_20"] - metrics["sma_50"], metrics["sma_50"])
     metrics["trend_bias"] = np.select(
         [
