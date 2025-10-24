@@ -16,6 +16,270 @@ from smartink.config import CONSOLE_WIDTH, PRIMARY_CSV_URL, BHAV_CSV_URL
 from smartink.data_processor import DataProcessor
 
 
+def _safe_pct(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
+    """Return percentage change while guarding against zero denominators."""
+    denominator_safe = denominator.replace({0: np.nan})
+    return (numerator / denominator_safe) * 100
+
+
+def _calculate_derived_metrics(df: pd.DataFrame, sma_label: str, prev_sma_label: str) -> pd.DataFrame:
+    """Enrich the raw breakout dataset with derivative metrics used across the signal pipeline."""
+    metrics = df.copy()
+    metrics["trend_strength"] = _safe_pct(metrics["sma_20"] - metrics["sma_50"], metrics["sma_50"])
+    metrics["trend_bias"] = np.select(
+        [
+            (metrics["sma_20"].notna()) & (metrics["sma_50"].notna()) & (metrics["sma_20"] > metrics["sma_50"]),
+            (metrics["sma_20"].notna()) & (metrics["sma_50"].notna()) & (metrics["sma_20"] < metrics["sma_50"]),
+        ],
+        ["Bullish Bias", "Bearish Bias"],
+        default="Neutral Bias",
+    )
+    metrics["rsi_signal"] = np.select(
+        [metrics["rsi_14"].ge(60), metrics["rsi_14"].le(40), metrics["rsi_14"].isna()],
+        ["Overbought", "Oversold", "No Signal"],
+        default="Neutral",
+    )
+
+    metrics["percentage_from_sma"] = _safe_pct(metrics["close"] - metrics[sma_label], metrics[sma_label])
+    metrics["prev_percentage_from_sma"] = _safe_pct(
+        metrics["prev_close"] - metrics[prev_sma_label], metrics[prev_sma_label]
+    )
+    metrics["distance_change_pct"] = metrics["percentage_from_sma"] - metrics["prev_percentage_from_sma"]
+    metrics["high_break_pct"] = _safe_pct(metrics["high"] - metrics[sma_label], metrics[sma_label])
+    metrics["low_break_pct"] = _safe_pct(metrics["low"] - metrics[sma_label], metrics[sma_label])
+    metrics["close_vs_prev_close_pct"] = _safe_pct(metrics["close"] - metrics["prev_close"], metrics["prev_close"])
+    metrics["volume_surge_ratio"] = np.where(
+        (metrics["avg_volume_5"].notna()) & (metrics["avg_volume_5"] > 0),
+        metrics["volume"] / metrics["avg_volume_5"],
+        np.nan,
+    )
+    metrics["momentum_5"] = _safe_pct(metrics["close"] - metrics["avg_close_5"], metrics["avg_close_5"])
+    metrics["twenty_day_breakout_pct"] = _safe_pct(
+        metrics["close"] - metrics["rolling_high_20"], metrics["rolling_high_20"]
+    )
+
+    small_tolerance = 0.1
+    metrics["position_vs_sma"] = np.select(
+        [
+            metrics["percentage_from_sma"] > small_tolerance,
+            metrics["percentage_from_sma"] < -small_tolerance,
+        ],
+        ["Above", "Below"],
+        default="At",
+    )
+
+    return metrics
+
+
+def _determine_breakout_conditions(metrics: pd.DataFrame) -> Dict[str, pd.Series]:
+    """Compute the boolean masks representing mutually exclusive breakout scenarios."""
+    breakout_confirm_pct = 0.35
+    retest_buffer_pct = 0.6
+    trigger_buffer_pct = 0.8
+    small_tolerance = 0.1
+
+    pct = metrics["percentage_from_sma"]
+    prev_pct = metrics["prev_percentage_from_sma"]
+    high_break = metrics["high_break_pct"]
+    low_break = metrics["low_break_pct"]
+    distance_change = metrics["distance_change_pct"].fillna(0)
+    momentum = metrics["momentum_5"].fillna(0)
+
+    fresh_breakout = (
+        (pct >= breakout_confirm_pct)
+        & (
+            prev_pct.isna()
+            | (prev_pct <= breakout_confirm_pct / 2)
+            | (distance_change >= breakout_confirm_pct)
+        )
+    )
+
+    fresh_breakdown = (
+        (pct <= -breakout_confirm_pct)
+        & (
+            prev_pct.isna()
+            | (prev_pct >= -breakout_confirm_pct / 2)
+            | (distance_change <= -breakout_confirm_pct)
+        )
+    )
+
+    retest_hold = (
+        (pct > breakout_confirm_pct / 2)
+        & (low_break >= -retest_buffer_pct)
+        & (low_break <= breakout_confirm_pct)
+        & (~fresh_breakout)
+    )
+
+    momentum_continuation = (
+        (pct > breakout_confirm_pct / 2)
+        & (prev_pct > breakout_confirm_pct / 2)
+        & (distance_change > 0)
+        & (momentum > 0)
+        & (~fresh_breakout)
+        & (~retest_hold)
+    )
+
+    failed_breakout = (pct < -small_tolerance) & (high_break >= breakout_confirm_pct) & (distance_change < 0)
+
+    trigger_watch = (
+        (pct >= -trigger_buffer_pct)
+        & (pct <= breakout_confirm_pct)
+        & (high_break >= -small_tolerance)
+        & (~fresh_breakout)
+        & (~retest_hold)
+        & (~momentum_continuation)
+    )
+
+    bearish_drift = (pct < -small_tolerance) & (~fresh_breakdown) & (~failed_breakout)
+
+    return {
+        "fresh_breakout": fresh_breakout,
+        "fresh_breakdown": fresh_breakdown,
+        "retest_hold": retest_hold,
+        "momentum_continuation": momentum_continuation,
+        "failed_breakout": failed_breakout,
+        "trigger_watch": trigger_watch,
+        "bearish_drift": bearish_drift,
+    }
+
+
+def _assign_breakout_status(metrics: pd.DataFrame, conditions: Dict[str, pd.Series]) -> pd.DataFrame:
+    """Attach human-readable status and signal labels based on detected scenarios."""
+    labelled = metrics.copy()
+    labelled["breakout_status"] = "At SMA"
+    labelled.loc[labelled["position_vs_sma"] == "Above", "breakout_status"] = "Holding Above"
+    labelled.loc[labelled["position_vs_sma"] == "Below", "breakout_status"] = "Holding Below"
+    labelled.loc[conditions["fresh_breakout"], "breakout_status"] = "Fresh Breakout Above"
+    labelled.loc[conditions["fresh_breakdown"], "breakout_status"] = "Fresh Breakdown Below"
+
+    default_signal = "Range-Bound / No Signal"
+    signal = np.array([default_signal] * len(labelled), dtype=object)
+    pct = labelled["percentage_from_sma"]
+
+    signal[conditions["fresh_breakout"]] = "Fresh Breakout (Confirmed)"
+    signal[conditions["fresh_breakdown"]] = "Fresh Breakdown (Confirmed)"
+    signal[conditions["retest_hold"]] = "Retest & Hold Above"
+    signal[conditions["momentum_continuation"]] = "Momentum Continuation"
+    signal[conditions["trigger_watch"] & (pct >= 0)] = "Breakout Watch (Compression)"
+    signal[conditions["trigger_watch"] & (pct < 0)] = "Breakout Watch (Slightly Below)"
+    signal[conditions["failed_breakout"]] = "Failed Breakout - Caution"
+    signal[conditions["bearish_drift"] & (~conditions["fresh_breakdown"])] = "Bearish Drift / Breakdown Risk"
+
+    labelled["breakout_signal"] = signal
+    return labelled
+
+
+def _calculate_confidence_score(labelled: pd.DataFrame, conditions: Dict[str, pd.Series]) -> np.ndarray:
+    """
+    Build the breakout confidence score.
+
+    The score starts from a scenario-driven base value and then adds:
+    * Proximity to the SMA (tighter closes boost above/below readings).
+    * Volume surge: a 1x surge adds no points, while a 3x surge can add up to 15 points.
+    * Short-term momentum: five-day momentum contributes up to +/-5 points.
+    * Trend alignment: favour moves aligning with the 20/50 SMA relationship.
+    * RSI extremes: penalise overbought conditions for long breakouts and oversold for breakdowns.
+    """
+    base = np.full(len(labelled), 40.0)
+    pct = labelled["percentage_from_sma"]
+    momentum = labelled["momentum_5"].fillna(0)
+
+    base[conditions["fresh_breakout"]] = 70.0
+    base[conditions["retest_hold"]] = 60.0
+    base[conditions["momentum_continuation"]] = 55.0
+    base[conditions["trigger_watch"] & (pct >= 0)] = 50.0
+    base[conditions["trigger_watch"] & (pct < 0)] = 45.0
+    base[conditions["failed_breakout"]] = 25.0
+    base[conditions["fresh_breakdown"]] = 65.0
+    base[conditions["bearish_drift"] & (~conditions["fresh_breakdown"])] = 45.0
+
+    confidence = base.copy()
+    confidence += np.clip(pct, -3, 3)
+
+    vol_adj = np.clip(np.nan_to_num(labelled["volume_surge_ratio"], nan=1.0) - 1, -1, 3)
+    confidence += vol_adj * 5
+
+    confidence += np.clip(momentum / 2, -5, 5)
+
+    if "trend_bias" in labelled.columns:
+        confidence += np.where(labelled["trend_bias"] == "Bullish Bias", np.where(pct >= 0, 5, -5), 0)
+        confidence += np.where(labelled["trend_bias"] == "Bearish Bias", np.where(pct < 0, 5, -5), 0)
+
+    if "rsi_signal" in labelled.columns:
+        confidence += np.where(labelled["rsi_signal"] == "Overbought", np.where(pct >= 0, -5, 5), 0)
+        confidence += np.where(labelled["rsi_signal"] == "Oversold", np.where(pct < 0, -5, 5), 0)
+
+    return np.clip(confidence, 0, 100)
+
+
+def _select_and_rank_candidates(
+    labelled: pd.DataFrame, conditions: Dict[str, pd.Series], max_distance: float
+) -> pd.DataFrame:
+    """Filter, sort, and present breakout candidates in priority order."""
+    pct = labelled["percentage_from_sma"]
+    signal_priority = np.full(len(labelled), 6.0)
+
+    signal_priority[conditions["fresh_breakout"]] = 1.0
+    signal_priority[conditions["retest_hold"]] = 2.0
+    signal_priority[conditions["momentum_continuation"]] = 3.0
+    signal_priority[conditions["trigger_watch"] & (pct >= 0)] = 3.5
+    signal_priority[conditions["trigger_watch"] & (pct < 0)] = 4.0
+    signal_priority[conditions["failed_breakout"]] = 4.5
+    signal_priority[conditions["fresh_breakdown"]] = 1.5
+    signal_priority[conditions["bearish_drift"] & (~conditions["fresh_breakdown"])] = 5.0
+
+    selection_mask = (
+        (pct.abs() <= max_distance)
+        | conditions["fresh_breakout"]
+        | conditions["fresh_breakdown"]
+        | conditions["trigger_watch"]
+        | conditions["failed_breakout"]
+    )
+
+    filtered = labelled.loc[selection_mask].copy()
+
+    if filtered.empty:
+        return filtered
+
+    filtered.insert(0, "rank_priority", signal_priority[filtered.index])
+    filtered = filtered.sort_values(
+        by=["rank_priority", "breakout_confidence", "percentage_from_sma", "symbol"],
+        ascending=[True, False, True, True],
+    )
+    filtered = filtered.drop(columns=["rank_priority"])
+    return filtered.reset_index(drop=True)
+
+
+def analyze_breakout_signals(
+    breakout_df: Optional[pd.DataFrame], sma_period: int = 20, max_distance: float = 5.0
+) -> Optional[pd.DataFrame]:
+    """
+    Transform enriched OHLCV data into actionable breakout insights.
+
+    Args:
+        breakout_df (Optional[pd.DataFrame]): Output from :meth:`StockDataManager.get_stocks_near_sma_breakout`.
+        sma_period (int): Focus SMA period (matches the query that produced the snapshot).
+        max_distance (float): Maximum allowed percentage distance from the SMA for neutral candidates.
+
+    Returns:
+        Optional[pd.DataFrame]: Ranked breakout candidates with status, signal, and confidence columns.
+    """
+    if breakout_df is None:
+        return None
+    if breakout_df.empty:
+        return breakout_df
+
+    sma_label = f"sma_{sma_period}"
+    prev_sma_label = f"prev_sma_{sma_period}"
+
+    metrics = _calculate_derived_metrics(breakout_df, sma_label, prev_sma_label)
+    conditions = _determine_breakout_conditions(metrics)
+    labelled = _assign_breakout_status(metrics, conditions)
+    labelled["breakout_confidence"] = _calculate_confidence_score(labelled, conditions)
+
+    return _select_and_rank_candidates(labelled, conditions, max_distance)
+
+
 class TechnicalAnalyzer:
     """Handles technical analysis and stock screening."""
     
@@ -191,7 +455,8 @@ class TechnicalAnalyzer:
         Returns:
             Optional[pd.DataFrame]: Stocks near SMA breakout or None
         """
-        return self.data_manager.get_stocks_near_sma_breakout(sma_period, max_distance)
+        raw_snapshot = self.data_manager.get_stocks_near_sma_breakout(sma_period, max_distance)
+        return analyze_breakout_signals(raw_snapshot, sma_period=sma_period, max_distance=max_distance)
 
     def get_stocks_above_sma(self, sma_period: int = 20, max_distance: float = None) -> Optional[pd.DataFrame]:
         """

@@ -236,20 +236,31 @@ class StockDataFetcher:
 
         return rsi
 
-    def calculate_indicators(self, data: pd.DataFrame) -> pd.DataFrame:
-        """Enrich OHLCV data with core indicators used across the app."""
+    def calculate_indicators(self, data: pd.DataFrame, windows: Optional[List[int]] = None) -> pd.DataFrame:
+        """
+        Enrich OHLCV data with moving averages and momentum indicators.
+
+        Args:
+            data (pd.DataFrame): Price history sorted by date ascending.
+            windows (Optional[List[int]]): SMA window lengths to compute. Defaults to [20, 50].
+
+        Returns:
+            pd.DataFrame: Copy of the input data with indicator columns appended.
+        """
         if data is None or data.empty:
             return data
 
-        data = data.sort_values('date').copy()
+        windows = windows or [20, 50]
 
-        for window in (20, 50):
-            column_name = f'sma_{window}'
-            data[column_name] = data['close'].rolling(window=window, min_periods=window).mean()
+        enriched = data.sort_values("date").copy()
 
-        data['rsi_14'] = self._calculate_rsi_series(data['close'], window=14)
+        for window in windows:
+            column_name = f"sma_{window}"
+            enriched[column_name] = enriched["close"].rolling(window=window, min_periods=window).mean()
 
-        return data
+        enriched["rsi_14"] = self._calculate_rsi_series(enriched["close"], window=14)
+
+        return enriched
 
     def calculate_sma(self, data: pd.DataFrame, window: int = 20) -> pd.DataFrame:
         """
@@ -272,13 +283,7 @@ class StockDataFetcher:
                 f"Not enough data for {window}-day SMA calculation; results will contain NaN values"
             )
 
-        data = data.sort_values('date').copy()
-        data[f'sma_{window}'] = data['close'].rolling(window=window, min_periods=window).mean()
-
-        enriched = self.calculate_indicators(data)
-        enriched[f'sma_{window}'] = data[f'sma_{window}']
-
-        return enriched
+        return self.calculate_indicators(data, windows=[window])
     
     def fetch_multiple_stocks_bulk(self, symbols: List[str], period: str = "3mo") -> Dict[str, pd.DataFrame]:
         """

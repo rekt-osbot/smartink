@@ -15,7 +15,6 @@ import pytest
         "smartink.optimized_stock_filter",
         "smartink.stock_data_fetcher",
         "smartink.stock_data_manager",
-        "smartink.stock_filter",
         "smartink.stock_filter_cache",
         "smartink.technical_analysis",
         "smartink.utils",

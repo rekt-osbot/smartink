@@ -208,16 +208,15 @@ class StockAnalysisAutomation:
             data_manager = StockDataManager(verbose=self.verbose)
             
             if self.verbose:
-                print_step(1, "Cleaning up old price data")
-            
-            # Clean up data older than 6 months
-            from datetime import datetime, timedelta
-            cutoff_date = datetime.now() - timedelta(days=180)
-            
-            # This would need to be implemented in StockDataManager
-            # For now, just report success
-            print("✅ Data cleanup completed!")
-            return True
+                print_step(1, "Deleting stale price and indicator rows")
+
+            days_to_keep = 180
+            if data_manager.cleanup_old_data(days_to_keep=days_to_keep):
+                print(f"✅ Deleted data older than {days_to_keep} days")
+                return True
+
+            print("✗ No records deleted; verify that data exists for cleanup")
+            return False
             
         except Exception as e:
             print(f"✗ Error during cleanup: {e}")

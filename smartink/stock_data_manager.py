@@ -308,8 +308,20 @@ class StockDataManager(DatabaseManager):
             return None
     
     def get_stocks_near_sma_breakout(self, sma_period: int = 20, max_distance: float = 5.0) -> Optional[pd.DataFrame]:
-        """Return enhanced breakout intelligence for stocks near a simple moving average."""
+        """
+        Retrieve the latest price and indicator snapshot needed for breakout analysis.
 
+        This method is intentionally limited to database access. All analytical calculations are handled by
+        :func:`smartink.technical_analysis.analyze_breakout_signals`. The ``max_distance`` argument is preserved for
+        backwards compatibility but is not used for filtering at this layer.
+
+        Args:
+            sma_period (int): Simple moving average period to target.
+            max_distance (float): Unused placeholder kept to avoid breaking callers.
+
+        Returns:
+            Optional[pd.DataFrame]: Latest enriched records for each symbol or ``None`` when no data is available.
+        """
         try:
             sma_column = f"sma_{sma_period}"
 
@@ -377,215 +389,12 @@ class StockDataManager(DatabaseManager):
 
             sma_label = f"sma_{sma_period}"
             prev_sma_label = f"prev_sma_{sma_period}"
-            df = df.rename(columns={
-                "target_sma": sma_label,
-                "prev_target_sma": prev_sma_label
-            })
-
-            def safe_pct(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
-                denominator_safe = denominator.replace({0: np.nan})
-                return (numerator / denominator_safe) * 100
-
-            df["trend_strength"] = safe_pct(df["sma_20"] - df["sma_50"], df["sma_50"])
-            df["trend_bias"] = np.select(
-                [
-                    (df["sma_20"].notna()) & (df["sma_50"].notna()) & (df["sma_20"] > df["sma_50"]),
-                    (df["sma_20"].notna()) & (df["sma_50"].notna()) & (df["sma_20"] < df["sma_50"])
-                ],
-                ["Bullish Bias", "Bearish Bias"],
-                default="Neutral Bias"
+            return df.rename(
+                columns={
+                    "target_sma": sma_label,
+                    "prev_target_sma": prev_sma_label,
+                }
             )
-            df["rsi_signal"] = np.select(
-                [
-                    df["rsi_14"].ge(60),
-                    df["rsi_14"].le(40),
-                    df["rsi_14"].isna()
-                ],
-                ["Overbought", "Oversold", "No Signal"],
-                default="Neutral"
-            )
-
-            df["percentage_from_sma"] = safe_pct(df["close"] - df[sma_label], df[sma_label])
-            df["prev_percentage_from_sma"] = safe_pct(
-                df["prev_close"] - df[prev_sma_label], df[prev_sma_label]
-            )
-            df["distance_change_pct"] = df["percentage_from_sma"] - df["prev_percentage_from_sma"]
-            df["high_break_pct"] = safe_pct(df["high"] - df[sma_label], df[sma_label])
-            df["low_break_pct"] = safe_pct(df["low"] - df[sma_label], df[sma_label])
-            df["close_vs_prev_close_pct"] = safe_pct(df["close"] - df["prev_close"], df["prev_close"])
-            df["volume_surge_ratio"] = np.where(
-                (df["avg_volume_5"].notna()) & (df["avg_volume_5"] > 0),
-                df["volume"] / df["avg_volume_5"],
-                np.nan
-            )
-            df["momentum_5"] = safe_pct(df["close"] - df["avg_close_5"], df["avg_close_5"])
-            df["twenty_day_breakout_pct"] = safe_pct(df["close"] - df["rolling_high_20"], df["rolling_high_20"])
-
-            small_tolerance = 0.1
-            df["position_vs_sma"] = np.select(
-                [
-                    df["percentage_from_sma"] > small_tolerance,
-                    df["percentage_from_sma"] < -small_tolerance
-                ],
-                ["Above", "Below"],
-                default="At"
-            )
-
-            breakout_confirm_pct = 0.35
-            retest_buffer_pct = 0.6
-            trigger_buffer_pct = 0.8
-
-            pct = df["percentage_from_sma"]
-            prev_pct = df["prev_percentage_from_sma"]
-            high_break = df["high_break_pct"]
-            low_break = df["low_break_pct"]
-            distance_change = df["distance_change_pct"].fillna(0)
-            momentum = df["momentum_5"].fillna(0)
-
-            fresh_breakout = (
-                (pct >= breakout_confirm_pct) &
-                (
-                    prev_pct.isna() |
-                    (prev_pct <= breakout_confirm_pct / 2) |
-                    (distance_change >= breakout_confirm_pct)
-                )
-            )
-
-            fresh_breakdown = (
-                (pct <= -breakout_confirm_pct) &
-                (
-                    prev_pct.isna() |
-                    (prev_pct >= -breakout_confirm_pct / 2) |
-                    (distance_change <= -breakout_confirm_pct)
-                )
-            )
-
-            retest_hold = (
-                (pct > breakout_confirm_pct / 2) &
-                (low_break >= -retest_buffer_pct) &
-                (low_break <= breakout_confirm_pct) &
-                (~fresh_breakout)
-            )
-
-            momentum_continuation = (
-                (pct > breakout_confirm_pct / 2) &
-                (prev_pct > breakout_confirm_pct / 2) &
-                (distance_change > 0) &
-                (momentum > 0) &
-                (~fresh_breakout) &
-                (~retest_hold)
-            )
-
-            failed_breakout = (
-                (pct < -small_tolerance) &
-                (high_break >= breakout_confirm_pct) &
-                (distance_change < 0)
-            )
-
-            trigger_watch = (
-                (pct >= -trigger_buffer_pct) &
-                (pct <= breakout_confirm_pct) &
-                (high_break >= -small_tolerance) &
-                (~fresh_breakout) &
-                (~retest_hold) &
-                (~momentum_continuation)
-            )
-
-            bearish_drift = (
-                (pct < -small_tolerance) &
-                (~fresh_breakdown) &
-                (~failed_breakout)
-            )
-
-            df["breakout_status"] = "At SMA"
-            df.loc[df["position_vs_sma"] == "Above", "breakout_status"] = "Holding Above"
-            df.loc[df["position_vs_sma"] == "Below", "breakout_status"] = "Holding Below"
-            df.loc[fresh_breakout, "breakout_status"] = "Fresh Breakout Above"
-            df.loc[fresh_breakdown, "breakout_status"] = "Fresh Breakdown Below"
-
-            default_signal = "Range-Bound / No Signal"
-            signal = np.array([default_signal] * len(df))
-            signal[fresh_breakout] = "Fresh Breakout (Confirmed)"
-            signal[fresh_breakdown] = "Fresh Breakdown (Confirmed)"
-            signal[retest_hold] = "Retest & Hold Above"
-            signal[momentum_continuation] = "Momentum Continuation"
-            signal[trigger_watch & (pct >= 0)] = "Breakout Watch (Compression)"
-            signal[trigger_watch & (pct < 0)] = "Breakout Watch (Slightly Below)"
-            signal[failed_breakout] = "Failed Breakout - Caution"
-            signal[bearish_drift & (~fresh_breakdown)] = "Bearish Drift / Breakdown Risk"
-            df["breakout_signal"] = signal
-
-            base_confidence = np.full(len(df), 40.0)
-            base_confidence[fresh_breakout] = 70.0
-            base_confidence[retest_hold] = 60.0
-            base_confidence[momentum_continuation] = 55.0
-            base_confidence[trigger_watch & (pct >= 0)] = 50.0
-            base_confidence[trigger_watch & (pct < 0)] = 45.0
-            base_confidence[failed_breakout] = 25.0
-            base_confidence[fresh_breakdown] = 65.0
-            base_confidence[bearish_drift & (~fresh_breakdown)] = 45.0
-
-            confidence = base_confidence
-            confidence += np.clip(pct, -3, 3)
-
-            vol_adj = np.clip(np.nan_to_num(df["volume_surge_ratio"], nan=1.0) - 1, -1, 3)
-            confidence += vol_adj * 5
-
-            confidence += np.clip(momentum / 2, -5, 5)
-
-            if "trend_bias" in df.columns:
-                confidence += np.where(
-                    df["trend_bias"] == "Bullish Bias",
-                    np.where(pct >= 0, 5, -5),
-                    0
-                )
-                confidence += np.where(
-                    df["trend_bias"] == "Bearish Bias",
-                    np.where(pct < 0, 5, -5),
-                    0
-                )
-
-            if "rsi_signal" in df.columns:
-                confidence += np.where(
-                    df["rsi_signal"] == "Overbought",
-                    np.where(pct >= 0, -5, 5),
-                    0
-                )
-                confidence += np.where(
-                    df["rsi_signal"] == "Oversold",
-                    np.where(pct < 0, -5, 5),
-                    0
-                )
-
-            df["breakout_confidence"] = np.clip(confidence, 0, 100)
-
-            signal_priority = np.full(len(df), 6.0)
-            signal_priority[fresh_breakout] = 1.0
-            signal_priority[retest_hold] = 2.0
-            signal_priority[momentum_continuation] = 3.0
-            signal_priority[trigger_watch & (pct >= 0)] = 3.5
-            signal_priority[trigger_watch & (pct < 0)] = 4.0
-            signal_priority[failed_breakout] = 4.5
-            signal_priority[fresh_breakdown] = 1.5
-            signal_priority[bearish_drift & (~fresh_breakdown)] = 5.0
-
-            selection_mask = (
-                df["percentage_from_sma"].abs() <= max_distance
-            ) | fresh_breakout | fresh_breakdown | trigger_watch | failed_breakout
-
-            filtered_df = df.loc[selection_mask].copy()
-
-            if filtered_df.empty:
-                return None
-
-            filtered_df.insert(0, "rank_priority", signal_priority[filtered_df.index])
-            filtered_df = filtered_df.sort_values(
-                by=["rank_priority", "breakout_confidence", "percentage_from_sma", "symbol"],
-                ascending=[True, False, True, True]
-            )
-            filtered_df = filtered_df.drop(columns=["rank_priority"])
-
-            return filtered_df.reset_index(drop=True)
 
         except Exception as e:
             self._log(f"Error getting stocks near SMA breakout: {e}")

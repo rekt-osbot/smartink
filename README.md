@@ -1,7 +1,7 @@
 # 📈 SmartInk - Intelligent Stock Analysis Platform
 
 [![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://smartink.streamlit.app/)
-![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
+![Python](https://img.shields.io/badge/python-3.12-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Status](https://img.shields.io/badge/status-live-brightgreen.svg)
 
@@ -165,8 +165,8 @@ SmartInk is a professional-grade stock analysis platform that focuses on **actio
 git clone <repository-url>
 cd smartink
 
-# Ensure the expected Python version is available (installs 3.11 if needed)
-uv python install 3.11
+# Ensure the expected Python version is available (installs 3.12 if needed)
+uv python install 3.12
 
 # Install project dependencies and create the virtual environment
 uv sync
@@ -229,11 +229,12 @@ smartink/
 │   ├── optimized_stock_filter.py   # Advanced filtering utilities
 │   ├── stock_data_fetcher.py       # yfinance data ingestion
 │   ├── stock_data_manager.py       # Extended storage helpers
-│   ├── stock_filter.py             # Baseline filters
 │   ├── stock_filter_cache.py       # Persistent cache helpers
 │   ├── streamlit_app.py            # Streamlit dashboard
 │   ├── streamlit_streaming.py      # Streaming utilities
 │   └── technical_analysis.py       # Technical analysis orchestration
+├── scripts/                        # Developer analysis scripts (ignored in releases)
+│   └── analyze_stock_filtering.py  # Historical filtering study
 ├── tests/                          # Pytest-based automated checks
 │   ├── test_data_processor.py
 │   ├── test_database_manager.py

@@ -3,7 +3,7 @@ name = "smartink"
 version = "0.1.0"
 description = "Intelligent stock analysis platform for actionable trading insights"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "altair==5.5.0",
     "numpy==2.3.2",
