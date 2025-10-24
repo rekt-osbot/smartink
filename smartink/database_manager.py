@@ -72,39 +72,6 @@ class DatabaseManager:
         # Use mapping from config
         return PANDAS_TO_SQLITE_TYPES.get(dtype_str, 'TEXT')
     
-    def generate_create_table_sql(self, df: pd.DataFrame) -> str:
-        """
-        Generate CREATE TABLE SQL statement from DataFrame schema.
-        
-        Args:
-            df (pd.DataFrame): DataFrame to analyze
-            
-        Returns:
-            str: CREATE TABLE SQL statement
-        """
-        columns_sql = []
-        
-        if self.verbose:
-            self._log("Mapping pandas dtypes to SQLite types:")
-            self._log("-" * 50)
-        
-        for column, dtype in df.dtypes.items():
-            sqlite_type = self.map_pandas_dtype_to_sqlite(dtype)
-            columns_sql.append(f"    {column} {sqlite_type}")
-            
-            if self.verbose:
-                self._log(f"{column:20} | {str(dtype):15} -> {sqlite_type}")
-        
-        # Join all column definitions
-        columns_definition = ",\n".join(columns_sql)
-        
-        # Build the complete CREATE TABLE statement
-        create_table_sql = f"""CREATE TABLE IF NOT EXISTS {self.table_name} (
-{columns_definition}
-);"""
-        
-        return create_table_sql
-    
     def create_and_populate_table(self, df: pd.DataFrame) -> bool:
         """
         Optimized method to create table and populate it in one operation.

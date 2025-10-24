@@ -262,29 +262,6 @@ class StockDataFetcher:
 
         return enriched
 
-    def calculate_sma(self, data: pd.DataFrame, window: int = 20) -> pd.DataFrame:
-        """
-        Calculate Simple Moving Average for the close price and attach auxiliary indicators.
-
-        Args:
-            data (pd.DataFrame): OHLCV data
-            window (int): SMA window period
-
-        Returns:
-            pd.DataFrame: Data with SMA and related indicator columns added
-        """
-        if data is None or data.empty:
-            data = data.copy() if data is not None else pd.DataFrame()
-            data[f'sma_{window}'] = np.nan
-            return data
-
-        if len(data) < window:
-            self._log(
-                f"Not enough data for {window}-day SMA calculation; results will contain NaN values"
-            )
-
-        return self.calculate_indicators(data, windows=[window])
-    
     def fetch_multiple_stocks_bulk(self, symbols: List[str], period: str = "3mo") -> Dict[str, pd.DataFrame]:
         """
         Fetch data for multiple stocks using yfinance bulk download for better performance.
@@ -371,8 +348,8 @@ class StockDataFetcher:
                         if all(col in stock_data.columns for col in required_columns):
                             stock_data = stock_data[required_columns]
 
-                            # Calculate 20-day SMA
-                            stock_data = self.calculate_sma(stock_data, 20)
+                            # Calculate core indicators (SMA 20/50, RSI)
+                            stock_data = self.calculate_indicators(stock_data)
                             results[symbol] = stock_data
 
                             self._log(f"✓ Processed {symbol}: {len(stock_data)} records")
@@ -390,7 +367,7 @@ class StockDataFetcher:
                 for symbol in batch_symbols:
                     data = self.fetch_stock_data(symbol, period)
                     if data is not None:
-                        data = self.calculate_sma(data, 20)
+                        data = self.calculate_indicators(data)
                         results[symbol] = data
                     time.sleep(0.1)  # Rate limiting for fallback
 
@@ -445,8 +422,8 @@ class StockDataFetcher:
 
             data = self.fetch_stock_data(symbol, period)
             if data is not None:
-                # Calculate 20-day SMA
-                data = self.calculate_sma(data, 20)
+                # Calculate core indicators (SMA 20/50, RSI)
+                data = self.calculate_indicators(data)
                 results[symbol] = data
                 successful_fetches += 1
             else:

@@ -8,5 +8,3 @@ __pycache__/
 stock_filter_cache.json
 .env
 uv.lock
-/scripts/*
-!/scripts/analyze_stock_filtering.py
