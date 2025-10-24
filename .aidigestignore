@@ -1,0 +1,9 @@
+.venv/
+/.pytest_cache/
+__pycache__/
+*.py[cod]
+*.sqlite3
+*.db
+stock_filter_cache.json
+.env
+uv.lock
